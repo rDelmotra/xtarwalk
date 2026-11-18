@@ -9,8 +9,10 @@ import * as THREE from 'three';
 const VERT = /* glsl */ `
   varying vec3 vObjN;   // object-space normal (fixed lunar surface coordinates; +Z faces the observer)
   varying vec3 vWorldN;
+  varying vec3 vWorldP;
   void main() {
     vObjN = normalize(position);
+    vWorldP = (modelMatrix * vec4(position, 1.0)).xyz;
     vWorldN = normalize(mat3(modelMatrix) * normal);
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
@@ -20,8 +22,11 @@ const FRAG = /* glsl */ `
   uniform vec3 uSunWorld;
   uniform float uNight;
   uniform float uDay;     // 0 night .. 1 daylight (moon washes out a little in daylight)
+  uniform sampler2D uMap; // NASA LROC colour map (decoded to linear by the sampler)
+  uniform float uHasMap;  // 0 until the texture has loaded (procedural fallback), then 1
   varying vec3 vObjN;
   varying vec3 vWorldN;
+  varying vec3 vWorldP;
 
   float hash(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
   float noise(vec3 x) {
@@ -33,8 +38,7 @@ const FRAG = /* glsl */ `
   // soft elliptical blob on the near-side disc (x right, y up as seen from Earth)
   float mare(vec2 q, vec2 c, vec2 r) { vec2 d = (q - c) / r; return 1.0 - smoothstep(0.15, 1.25, length(d)); }
 
-  void main() {
-    vec3 n = normalize(vObjN);
+  float proceduralAlbedo(vec3 n) {
     vec2 q = n.xy;                      // orthographic near-side coordinates
     float warp = fbm(n * 3.0) - 0.5;
     vec2 qw = q + 0.11 * vec2(warp, fbm(n * 3.0 + 7.1) - 0.5);
@@ -63,16 +67,48 @@ const FRAG = /* glsl */ `
     // small crater pits
     float pits = smoothstep(0.8, 0.95, noise(n * 70.0)) * 0.05;
     albedo -= pits;
+    return albedo;
+  }
+
+  void main() {
+    vec3 n = normalize(vObjN);
+    float albedo;
+    vec3 base;
+    float relief = 0.0;
+    if (uHasMap > 0.5) {
+      // selenographic lon/lat -> equirectangular uv (lon 0 at image centre, east right, north up)
+      float lon = atan(n.x, n.z);
+      float lat = asin(clamp(n.y, -1.0, 1.0));
+      vec2 uv = vec2(0.5 + lon / 6.28318530718, 0.5 + lat / 3.14159265359);
+      vec3 tex = texture2D(uMap, uv).rgb;               // linear
+      float tl = dot(tex, vec3(0.2126, 0.7152, 0.0722));
+      // the map is pale and slightly blue-grey: pull toward warm grey, then add contrast so maria read small
+      vec3 c = mix(vec3(tl), tex, 0.55) * vec3(1.04, 1.0, 0.94);
+      c = pow(max(c, vec3(0.0)), vec3(1.35)) * 1.25;
+      base = c;
+      relief = tl - 0.45;
+    } else {
+      albedo = proceduralAlbedo(n);
+      base = vec3(1.0, 0.975, 0.93) * albedo;
+      base = pow(base, vec3(2.2));
+    }
 
     vec3 L = normalize(uSunWorld);
     vec3 N = normalize(vWorldN);
-    float ndl = dot(N, L);
-    // Lommel–Seeliger-ish: the Moon has little limb darkening, so use a flattened lambert
-    float lit = smoothstep(-0.02, 0.10, ndl) * (0.55 + 0.45 * clamp(ndl * 1.6, 0.0, 1.0));
-    float earthshine = 0.035;
-    vec3 tint = vec3(1.0, 0.975, 0.93);
-    vec3 col = tint * albedo * (lit * 1.15 + earthshine * (1.0 - lit));
+    vec3 V = normalize(cameraPosition - vWorldP);
+    float mu0 = dot(N, L);
+    float mu = max(dot(N, V), 0.03);
+    // Lommel-Seeliger: L ~ mu0 / (mu0 + mu) -- almost no limb darkening; normalised so disc centre at full moon = 1
+    float m0 = max(mu0, 0.0);
+    float ls = 2.0 * m0 / (m0 + mu);
+    float term = smoothstep(-0.02, 0.10, mu0);
+    // low sun makes albedo/relief contrast stronger near the terminator
+    float grazing = 1.0 - smoothstep(0.0, 0.35, m0);
+    float lit = term * ls * (1.0 + 0.9 * grazing * relief);
+    float earthshine = 0.03;
+    vec3 col = base * (lit * 1.0 + earthshine * (1.0 - term));
     col *= mix(1.0, 0.85, uDay);
+    col = pow(max(col, vec3(0.0)), vec3(1.0 / 2.2));   // back to display values, as the rest of the sky is
     float l = dot(col, vec3(0.3, 0.59, 0.11));
     col = mix(col, vec3(1.0, 0.25, 0.2) * l, uNight);
     gl_FragColor = vec4(col, 1.0);
@@ -99,7 +135,7 @@ export class Moon {
   constructor(radius = 1.0) {
     this.radius = radius;
     this.material = new THREE.ShaderMaterial({
-      uniforms: { uSunWorld: { value: new THREE.Vector3(0, 1, 0) }, uNight: { value: 0 }, uDay: { value: 0 } },
+      uniforms: { uSunWorld: { value: new THREE.Vector3(0, 1, 0) }, uNight: { value: 0 }, uDay: { value: 0 }, uMap: { value: null }, uHasMap: { value: 0 } },
       vertexShader: VERT,
       fragmentShader: FRAG
     });
@@ -111,6 +147,25 @@ export class Moon {
       depthWrite: false,
       blending: THREE.AdditiveBlending
     });
+    this._disposed = false;
+    this.map = null;
+    new THREE.TextureLoader().load(
+      import.meta.env.BASE_URL + 'textures/moon-lroc-2k.jpg',
+      (tex) => {
+        if (this._disposed) { tex.dispose(); return; }
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.generateMipmaps = true;
+        tex.minFilter = THREE.LinearMipmapLinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        tex.anisotropy = 4;
+        tex.needsUpdate = true;
+        this.map = tex;
+        this.material.uniforms.uMap.value = tex;
+        this.material.uniforms.uHasMap.value = 1;
+      },
+      undefined,
+      () => { /* keep the procedural fallback */ }
+    );
     this.geometry = new THREE.SphereGeometry(radius, 48, 32);
     this.glowGeometry = new THREE.PlaneGeometry(radius * 9, radius * 9);
   }
@@ -143,6 +198,8 @@ export class Moon {
   }
 
   dispose() {
+    this._disposed = true;
+    if (this.map) this.map.dispose();
     this.material.dispose();
     this.glowMaterial.dispose();
     this.geometry.dispose();

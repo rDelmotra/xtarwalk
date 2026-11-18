@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { SKY_RADIUS, altAzToVec3, computeSolarSystem, describeStarColour, starDisplayName } from '../astro/skyEngine.js';
 import { makeTextSprite } from './labels.js';
 import { DomeSky } from './domeSky.js';
+import { Atmosphere } from './atmosphere.js';
 import { Compass } from './compass.js';
 import { StarField } from './starField.js';
 import { StarTrails } from './starTrails.js';
@@ -20,6 +21,9 @@ function dayFadeForSunAlt(alt) {
   const t = Math.min(1, Math.max(0, (alt + 6) / 6));
   return 1 - t * t * (3 - 2 * t);
 }
+/** In daylight stars, lines and satellites never vanish completely: a faint floor says "they are there". */
+export const DAY_FLOOR = 0.15;
+const withDayFloor = (fade) => DAY_FLOOR + (1 - DAY_FLOOR) * fade;
 
 export class SkyScene {
   constructor(scene, catalog) {
@@ -218,9 +222,11 @@ export class SkyScene {
     this.sunAlt = alt;
     this.domeSky.setSun(sv);
     const fade = dayFadeForSunAlt(alt);
-    this.starField.setDayFade(fade);
-    this.starTrails.setDayFade(fade);
-    this.lineMaterial.uniforms.uDayFade.value = fade;
+    const shown = withDayFloor(fade);
+    this.starField.setDayFade(shown);
+    this.starTrails.setDayFade(shown);
+    this.lineMaterial.uniforms.uDayFade.value = shown;
+    this.dayVisibility = shown; // read by other overlays (satellites)
     // Labels fade with the stars, so their dark boxes don't sit on a daytime sky.
     if (Math.abs(fade - (this._dayFade ?? 1)) > 0.01) {
       this._dayFade = fade;
@@ -276,7 +282,9 @@ export class SkyScene {
     for (const e of this._bodyEntries) {
       const t = e.target;
       const up = !clip || t.alt >= 0;
-      e.mesh.visible = up;
+      // with the physical sky the Sun is drawn by the atmosphere (true disc + glare); keep only its hit target
+      const skyDrawsSun = t.name === 'Sun' && this.domeSky.atmosphere && !this.isAR;
+      e.mesh.visible = up && !skyDrawsSun;
       this._setHitEnabled(e.hit, up);
       e.label.visible = up && t.alt > -5;
     }
@@ -433,6 +441,17 @@ export class SkyScene {
         if (child.material !== this._hitMat) child.material.dispose();
       }
     }
+  }
+
+  /** Load takram's physical sky tables and switch the dome to them (gradient sky stays on failure, or with ?atmo=0). */
+  async enableAtmosphere(renderer) {
+    if (new URLSearchParams(location.search).get('atmo') === '0') return false;
+    const atmo = await Atmosphere.load(renderer);
+    if (!atmo) return false;
+    this.domeSky.enableAtmosphere(atmo);
+    this._applyCelestialVisibility();
+    if (this.nightMode) this.domeSky.setNightMode(true);
+    return true;
   }
 
   setNightMode(enabled) {

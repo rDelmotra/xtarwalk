@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { ATMOSPHERE_GLSL, ATMOSPHERE_DEFINES } from './atmosphere.js';
 
 // Ported from orbitwatch DomeSkyLayer.ts: analytic sky gradient + twilight glow + Gerstner sea
 // (Fresnel-reflecting the sky, with sun glitter) + procedural horizon ridge.
@@ -27,6 +28,62 @@ varying vec3 vWorldPos;
 
 const float EYE_HEIGHT_M = 2.0;                  // artistic eye height above the sea
 
+#ifdef ATMO
+uniform vec3  uAtmoCam;      // observer position, takram length units (km), Earth centre at origin
+uniform float uExposure;
+uniform vec3  uWhiteBalance;
+uniform vec3  uSunTint;      // sunlight colour after the air (reddens at the horizon), max channel 1
+uniform float uSunVisible;   // 0 below the horizon .. 1 once the disc has cleared it
+
+// takram/Bruneton sky luminance, white-balanced and exposed (still HDR).
+vec3 skyHDR(vec3 dir, out vec3 transmittance) {
+  vec3 d = normalize(vec3(dir.x, max(dir.y, 0.0005), dir.z)); // never ask for a ray into the ground
+  vec3 L = GetSkyRadiance(uAtmoCam, d, 0.0, normalize(uSunDir), transmittance);
+  return L * uWhiteBalance * uExposure;
+}
+
+// Display mapping: hue-keeping highlight roll-off (orbitwatch's ground camera), ACES filmic, sRGB encode.
+vec3 acesFilmic(vec3 x) {
+  const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+vec3 toDisplay(vec3 col) {
+  float Y = dot(col, vec3(0.2126, 0.7152, 0.0722));
+  const float knee = 0.6, roll = 0.05;
+  if (Y > knee) col *= (knee + roll * log(1.0 + (Y - knee) / roll)) / Y;
+  col = acesFilmic(col);
+  return pow(col, vec3(1.0 / 2.2));
+}
+
+// Faint navy night floor (airglow + light pollution), so the night sky and the ridge never read as a void.
+vec3 nightFloor(vec3 dir) {
+  float night = 1.0 - smoothstep(-0.30, -0.08, dot(normalize(uSunDir), uUp));
+  float g = smoothstep(0.0, 0.5, max(dir.y, 0.0));
+  return night * mix(vec3(0.030, 0.042, 0.085), vec3(0.008, 0.013, 0.032), g);
+}
+
+vec3 skyColor(vec3 dir) {
+  vec3 T;
+  return toDisplay(skyHDR(dir, T)) + nightFloor(dir);
+}
+
+// Sky plus the Sun: the true-size disc (takram's solar luminance through the air) and a soft glare
+// tinted by the sunlight colour, like orbitwatch's ground sun.
+vec3 skyWithSun(vec3 dir) {
+  vec3 T;
+  vec3 col = skyHDR(dir, T);
+  vec3 s = normalize(uSunDir);
+  float cosA = dot(dir, s);
+  float ang = acos(clamp(cosA, -1.0, 1.0));
+  float fragAngle = length(fwidth(dir));
+  float R = ATMOSPHERE.sun_angular_radius * 1.6;  // a touch larger than true so it reads in a headset
+  float disc = smoothstep(R, R - max(fragAngle, 1e-4), ang);
+  col += T * GetSolarRadiance() * uWhiteBalance * uExposure * disc * 0.02;
+  float glare = exp(-ang / 0.02) * 6.0 + 0.6 * exp(-ang / 0.12);
+  col += uSunTint * glare * uSunVisible;
+  return toDisplay(col) + nightFloor(dir);
+}
+#else
 // Pure upper‑hemisphere sky colour for any direction. No below‑horizon term — that's
 // the sea (below). Reused by the sea as its reflection source.
 vec3 skyColor(vec3 dir) {
@@ -51,6 +108,8 @@ vec3 skyColor(vec3 dir) {
   col += vec3(1.0, 0.46, 0.20) * (pow(towardSun, 3.0) * twilightWindow * horizonProximity) * 0.6;
   return col;
 }
+vec3 skyWithSun(vec3 dir) { return skyColor(dir); }
+#endif
 
 // One Gerstner wave's contribution to the surface normal (height‑field form):
 // returns (∂east, up‑term, ∂north) accumulated into the tangent‑frame normal.
@@ -136,7 +195,7 @@ void main() {
   vec3 north = vec3(0.0, 0.0, -1.0);
 
   // Base scene: sky above the horizon, ambient sea below.
-  vec3 color = (elev >= 0.0) ? skyColor(viewDir) : seaColor(viewDir, elev, east, north);
+  vec3 color = (elev >= 0.0) ? skyWithSun(viewDir) : seaColor(viewDir, elev, east, north);
 
   // ── Procedural horizon mountains — a low silhouette covering the seam ────────
   // The ridge rises ~1‑3° above the horizon and its foot sits ~3° BELOW it, fading
@@ -160,6 +219,9 @@ void main() {
   float lum = dot(color, vec3(0.299, 0.587, 0.114));
   color = mix(color, vec3(lum * 0.55, lum * 0.06, lum * 0.04), uNight);
 
+#ifdef ATMO
+  color += (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.0;
+#endif
   gl_FragColor = vec4(color, 1.0);
 }
 `;
@@ -199,9 +261,35 @@ export class DomeSky {
     scene.add(this.mesh);
   }
 
+  /**
+   * Switch the sky to takram's physical atmosphere (sea reflections and mountains keep working; they
+   * read skyColor()). Rebuilds the material as GLSL3 with the Bruneton runtime prepended.
+   * @param {import('./atmosphere.js').Atmosphere} atmo
+   */
+  enableAtmosphere(atmo) {
+    this.atmosphere = atmo;
+    const old = this.material;
+    const defines = { ...ATMOSPHERE_DEFINES };
+    if (atmo.uniforms.higher_order_scattering_texture.value) defines.HAS_HIGHER_ORDER_SCATTERING_TEXTURE = '1';
+    this.material = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      defines,
+      uniforms: { ...old.uniforms, ...atmo.uniforms },
+      vertexShader: SKY_VERT,
+      fragmentShader: ATMOSPHERE_GLSL + SKY_FRAG,
+      side: THREE.BackSide,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false
+    });
+    this.mesh.material = this.material;
+    old.dispose();
+  }
+
   /** Sun direction in skyRoot-local space (same frame as star positions). */
   setSun(dir) {
     this._sunLocal.set(dir.x, dir.y, dir.z).normalize();
+    this.sunAltDeg = Math.asin(THREE.MathUtils.clamp(this._sunLocal.y, -1, 1)) * THREE.MathUtils.RAD2DEG;
   }
 
   /**
@@ -216,6 +304,7 @@ export class DomeSky {
     this._sunWorld.copy(this._sunLocal);
     if (skyRootQuat) this._sunWorld.applyQuaternion(skyRootQuat);
     this.material.uniforms.uSunDir.value.copy(this._sunWorld);
+    if (this.atmosphere) this.atmosphere.update(this._sunWorld, this.sunAltDeg ?? -30, dt);
   }
 
   setVisible(v) {
@@ -231,5 +320,6 @@ export class DomeSky {
     this.scene.remove(this.mesh);
     this.geometry.dispose();
     this.material.dispose();
+    this.atmosphere?.dispose();
   }
 }

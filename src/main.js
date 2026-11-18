@@ -12,6 +12,7 @@ import { MagDial } from './ui/magDial.js';
 import { MagControl, autoLimit } from './sky/magLimit.js';
 import { DesktopDial } from './ui/desktopDial.js';
 import { AgamottoRing } from './xr/agamottoRing.js';
+import { Satellites } from './sat/satellites.js';
 import { PushAlign } from './xr/pushAlign.js'; // [Engineer D] push-gesture auto-align
 
 const state = {
@@ -20,6 +21,7 @@ const state = {
   locationLabel: 'Delhi (default)',
   timeOffsetHours: 0,
   showConstellations: true,
+  showSatellites: true,
   nightMode: false,
   selectedTarget: null,
   calibrating: false,
@@ -39,6 +41,7 @@ const btnVr = document.getElementById('btn-vr');
 const btnCal = document.getElementById('btn-calibrate');
 const btnFind = document.getElementById('btn-find');
 const btnLines = document.getElementById('btn-constellations');
+const btnSats = document.getElementById('btn-satellites');
 const btnNight = document.getElementById('btn-night');
 const btnResetAlign = document.getElementById('btn-reset-align');
 
@@ -74,12 +77,52 @@ function currentDate() {
   return new Date(Date.now() + state.timeOffsetHours * 3600 * 1000);
 }
 
+/** The time the sky is currently showing (live preview while scrubbing, else the committed offset). */
+function displayDate() {
+  return previewActive && dialState?.date ? dialState.date : currentDate();
+}
+
+// ---- Satellites overlay ----
+let satellites = null;
+let lastSatMs = 0;
+function updateSatellites(force = false) {
+  if (!satellites?.points) return;
+  const now = performance.now();
+  if (!force && now - lastSatMs < 250) return; // ~4 Hz
+  lastSatMs = now;
+  satellites.setObserver(state.lat, state.lon, 0);
+  satellites.setDayVisibility(skyScene?.dayVisibility ?? 1);
+  satellites.update(displayDate());
+  const sel = state.selectedTarget;
+  if (sel && sel.kind === 'satellite' && !state.inXR && state.calStep === 'idle' && state.finding === 'idle') showSatInfo(sel);
+}
+function showSatInfo(t) {
+  updateHtmlInfo(t.name, [t.subtitle, `Alt ${t.alt.toFixed(1)}° • Az ${t.az.toFixed(1)}°`, t.extra].join('<br/>'));
+}
+async function bootSatellites() {
+  try {
+    satellites = new Satellites(skyScene.skyRoot);
+    await satellites.load();
+    satellites.setNightMode(state.nightMode);
+    satellites.setVisible(state.showSatellites);
+    updateSatellites(true);
+  } catch (err) {
+    console.warn('Satellites unavailable:', err);
+    satellites?.dispose();
+    satellites = null;
+    btnSats.disabled = true;
+    btnSats.classList.remove('active');
+    btnSats.title = 'Satellite data unavailable';
+  }
+}
+
 function refreshSky() {
   if (!catalog || !skyScene) return;
   const date = currentDate();
   lastSnapshot = computeSkySnapshot(catalog, date, state.lat, state.lon);
   skyScene.updateSnapshot(lastSnapshot, state.showConstellations);
 
+  updateSatellites(true);
   updateStatusLine();
 }
 
@@ -147,6 +190,7 @@ dial.onChange((s) => {
     if (supportsPreview()) {
       previewActive = true;
       skyScene.setScrubPreview(s.offsetHours - state.timeOffsetHours, s.date);
+      updateSatellites();
     }
     updateStatusLine();
     const hour = Math.floor(s.offsetHours);
@@ -209,12 +253,19 @@ function handleAction(action) {
     btnLines.classList.toggle('active', state.showConstellations);
     hudPanel.setButtonActive('constellations', state.showConstellations);
     refreshSky();
+  } else if (action === 'satellites') {
+    if (!satellites?.points) return;
+    state.showSatellites = !state.showSatellites;
+    btnSats.classList.toggle('active', state.showSatellites);
+    satellites.setVisible(state.showSatellites);
+    if (!state.showSatellites && state.selectedTarget?.kind === 'satellite') clearSatSelection();
   } else if (action === 'night') {
     state.nightMode = !state.nightMode;
     document.body.classList.toggle('night-mode', state.nightMode);
     btnNight.classList.toggle('active', state.nightMode);
     hudPanel.setButtonActive('night', state.nightMode);
     skyScene?.setNightMode(state.nightMode);
+    satellites?.setNightMode(state.nightMode);
     desktopDial.render(dialState, state.nightMode);
     if (state.selectedTarget && state.inXR) {
       spatialCard.show(state.selectedTarget, state.nightMode);
@@ -455,20 +506,31 @@ function handleRaySelect(raycaster) {
   // Planets/Moon/Sun first (real meshes); otherwise the nearest of ALL catalogue stars by angle.
   const hits = raycaster.intersectObjects(skyScene.planetGroup.children, false);
   let target = hits.length > 0 ? hits[0].object.userData.target : null;
+  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  if (!target && state.showSatellites && satellites) target = satellites.pick(raycaster.ray.direction, cam.fov || 65);
   if (!target) {
-    const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
     target = skyScene.pickStar(raycaster.ray.direction, cam.fov || 65);
   }
   if (target) selectTarget(target);
 }
 
+function clearSatSelection() {
+  satellites?.setSelected(null);
+  state.selectedTarget = null;
+  skyScene?.highlightTarget(null);
+}
+
 function selectTarget(target) {
   state.selectedTarget = target;
+  satellites?.setSelected(target);
   skyScene.highlightTarget(target, camera.position);
+  if (target.kind === 'satellite') skyScene.skyRoot.add(skyScene.selectionRing); // satellites live in skyRoot space
   if (state.inXR) {
     spatialCard.show(target, state.nightMode);
   }
-  if (state.calStep === 'idle') {
+  if (target.kind === 'satellite') {
+    if (state.calStep === 'idle') showSatInfo(target);
+  } else if (state.calStep === 'idle') {
     const details = [
       target.subtitle,
       `Alt ${target.alt.toFixed(1)}° • Az ${target.az.toFixed(1)}°`,
@@ -563,6 +625,7 @@ window.addEventListener('keydown', (e) => {
 });
 btnLines.onclick = () => handleAction('constellations');
 btnNight.onclick = () => handleAction('night');
+btnSats.onclick = () => handleAction('satellites');
 
 // ---- [Engineer D] Push-to-align: both palms pushed at a bright object re-solves yaw (see src/xr/pushAlign.js) ----
 const pushAlign = new PushAlign({
@@ -637,8 +700,10 @@ window.addEventListener('resize', () => {
 async function boot() {
   catalog = await loadSkyCatalog();
   skyScene = new SkyScene(scene, catalog);
+  skyScene.enableAtmosphere(renderer); // physical sky; async, falls back to the gradient
   hudPanel.setButtonActive('constellations', true);
   refreshSky();
+  bootSatellites();
 
   if (navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(
@@ -657,7 +722,9 @@ async function boot() {
 }
 
 boot();
-if (import.meta.env.DEV) window.__xw = { get skyScene() { return skyScene; }, camera, dial, calibrator, state, get snapshot() { return lastSnapshot; } };
+if (import.meta.env.DEV) window.__xw = { get skyScene() { return skyScene; }, get satellites() { return satellites; }, camera, dial, calibrator, state, get snapshot() { return lastSnapshot; },
+  /** dev: aim the desktop camera at a world direction */
+  lookAt(v) { yaw = Math.atan2(-v.x, -v.z); pitch = Math.asin(Math.max(-1, Math.min(1, v.y / Math.hypot(v.x, v.y, v.z)))); applyDesktopCamera(); } };
 if (import.meta.env.DEV) window.__xw.simulatePush = (altDeg, azWorldDeg = 0) => pushAlign.simulatePush(altDeg, azWorldDeg); // [Engineer D]
 
 let lastTime = performance.now();
@@ -672,7 +739,18 @@ renderer.setAnimationLoop((now) => {
   if (skyScene) {
     skyScene.skyRoot.rotation.y = calibrator.update(dt);
     skyScene.tick(dt, renderer.xr.isPresenting ? renderer.xr.getCamera() : camera);
-    aimReticle.update(now, camera, skyScene, state.selectedTarget, { visible: !renderer.xr.isPresenting });
+    updateSatellites();
+    const selSat = state.selectedTarget?.kind === 'satellite' ? state.selectedTarget : null;
+    if (selSat) {
+      const ring = skyScene.selectionRing;
+      ring.position.set(selSat.pos.x, selSat.pos.y, selSat.pos.z);
+      ring.lookAt(renderer.xr.isPresenting ? renderer.xr.getCamera().position : camera.position);
+      ring.visible = selSat.alt > 0 && state.showSatellites;
+    }
+    aimReticle.update(now, camera, skyScene, state.selectedTarget, {
+      visible: !renderer.xr.isPresenting,
+      pickExtra: state.showSatellites && satellites ? (d, fov) => satellites.pick(d, fov) : null
+    });
     updatePulse(now);
     if (state.finding === 'tracking') {
       // Positions are recomputed every 15s; re-resolve the target by name each frame.

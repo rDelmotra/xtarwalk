@@ -44,10 +44,10 @@ export class AimReticle {
   /** World position of a selection target (stars live in the rotating celestial group). */
   worldPos(skyScene, t, out) {
     out.set(t.pos.x, t.pos.y, t.pos.z);
-    return t.kind === 'planet' ? skyScene.skyRoot.localToWorld(out) : skyScene.celestialGroup.localToWorld(out);
+    return (t.kind === 'planet' || t.kind === 'satellite') ? skyScene.skyRoot.localToWorld(out) : skyScene.celestialGroup.localToWorld(out);
   }
 
-  update(now, camera, skyScene, selected, { visible = true } = {}) {
+  update(now, camera, skyScene, selected, { visible = true, pickExtra = null } = {}) {
     this.root.classList.toggle('hidden', !visible);
     if (!visible || !skyScene) return;
 
@@ -59,6 +59,7 @@ export class AimReticle {
       const ray = new THREE.Raycaster(camera.position, this._fwd);
       const hits = ray.intersectObjects(skyScene.planetGroup.children, false);
       if (hits.length) pick = hits[0].object.userData.target;
+      if (!pick && pickExtra) pick = pickExtra(this._fwd, Math.min(camera.fov, 40));
       if (!pick) pick = skyScene.pickStar(this._fwd, Math.min(camera.fov, 40));
       if (pick && pick.alt < -1 && skyScene.clipHorizon) pick = null;
       this.current = pick;
