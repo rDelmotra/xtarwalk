@@ -13,7 +13,7 @@
   const lerpAz = (a, b, k) => a + ((((b - a) % 360) + 540) % 360 - 180) * k;
   const dirAzAlt = (az, alt) => new V3(Math.cos(alt * D2R) * Math.sin(az * D2R), Math.sin(alt * D2R), -Math.cos(alt * D2R) * Math.cos(az * D2R));
   const EYE = new V3(0, 1.6, 0);
-  const TW = Number(window.__TWIST ?? 29); // degrees per twist (two ratchets)
+  const TW = Number(window.__TWIST ?? 44); // degrees per twist (two ratchets)
 
   let capEl, endEl, moon, P, caps, total;
 
