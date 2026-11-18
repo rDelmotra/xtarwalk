@@ -109,7 +109,10 @@ const STAR_FRAG = /* glsl */ `
     float l = dot(col, vec3(0.3, 0.59, 0.11));
     col = mix(col, vec3(1.0, 0.22, 0.18) * l * 1.2, uNightMode);
     float clip = mix(1.0, smoothstep(-0.01, 0.02, vAlt), uHorizonClip);
-    gl_FragColor = vec4(col * uDayFade * clip, 1.0); // additive: SRC_ALPHA(=1) * rgb + dst
+    vec3 finalCol = col * uDayFade * clip;
+    float a = clamp(max(finalCol.r, max(finalCol.g, finalCol.b)), 0.0, 1.0);
+    if (a < 0.002) discard;
+    gl_FragColor = vec4(finalCol, a);
   }
 `;
 
@@ -148,7 +151,13 @@ export class StarField {
       fragmentShader: STAR_FRAG,
       transparent: true,
       depthWrite: false,
-      blending: THREE.AdditiveBlending
+      blending: THREE.CustomBlending,
+      blendEquation: THREE.AddEquation,
+      blendSrc: THREE.OneFactor,
+      blendDst: THREE.OneFactor,
+      blendEquationAlpha: THREE.AddEquation,
+      blendSrcAlpha: THREE.OneFactor,
+      blendDstAlpha: THREE.OneMinusSrcAlphaFactor
     });
     this.points = new THREE.Points(geo, this.material);
     this.points.frustumCulled = false;

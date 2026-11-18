@@ -40,7 +40,9 @@ const FRAG = /* glsl */ `
     vec3 col = uColor * (core + halo) * vBright * edge;
     float l = dot(col, vec3(0.3, 0.59, 0.11));
     col = mix(col, vec3(1.0, 0.22, 0.18) * l * 1.2, uNightMode);
-    gl_FragColor = vec4(col, 1.0);
+    float a = clamp(max(col.r, max(col.g, col.b)), 0.0, 1.0);
+    if (a < 0.002) discard;
+    gl_FragColor = vec4(col, a);
   }
 `;
 
@@ -86,7 +88,14 @@ export class Satellites {
         uNightMode: { value: 0 }
       },
       vertexShader: VERT, fragmentShader: FRAG,
-      transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending
+      transparent: true, depthWrite: false, depthTest: false,
+      blending: THREE.CustomBlending,
+      blendEquation: THREE.AddEquation,
+      blendSrc: THREE.OneFactor,
+      blendDst: THREE.OneFactor,
+      blendEquationAlpha: THREE.AddEquation,
+      blendSrcAlpha: THREE.OneFactor,
+      blendDstAlpha: THREE.OneMinusSrcAlphaFactor
     });
     this.points = null;
     this._v2 = new THREE.Vector2();

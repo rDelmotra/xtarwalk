@@ -125,7 +125,10 @@ const GLOW_FRAG = /* glsl */ `
     float r = length(vUv - 0.5) * 2.0;
     float g = uOpacity * uStrength * (0.55 * exp(-r * 5.5) + 0.12 * exp(-r * 2.2)) * smoothstep(1.0, 0.7, r);
     vec3 c = mix(vec3(0.85, 0.9, 1.0), vec3(1.0, 0.25, 0.2), uNight);
-    gl_FragColor = vec4(c * g, 1.0);
+    vec3 finalCol = c * g;
+    float a = clamp(max(finalCol.r, max(finalCol.g, finalCol.b)), 0.0, 1.0);
+    if (a < 0.002) discard;
+    gl_FragColor = vec4(finalCol, a);
   }
 `;
 const GLOW_VERT = /* glsl */ `
@@ -148,7 +151,13 @@ export class Moon {
       fragmentShader: GLOW_FRAG,
       transparent: true,
       depthWrite: false,
-      blending: THREE.AdditiveBlending
+      blending: THREE.CustomBlending,
+      blendEquation: THREE.AddEquation,
+      blendSrc: THREE.OneFactor,
+      blendDst: THREE.OneFactor,
+      blendEquationAlpha: THREE.AddEquation,
+      blendSrcAlpha: THREE.OneFactor,
+      blendDstAlpha: THREE.OneMinusSrcAlphaFactor
     });
     this._disposed = false;
     this.map = null;
