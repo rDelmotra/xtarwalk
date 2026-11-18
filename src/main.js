@@ -14,6 +14,7 @@ import { DesktopDial } from './ui/desktopDial.js';
 import { AgamottoRing } from './xr/agamottoRing.js';
 import { Satellites } from './sat/satellites.js';
 import { RefineSession, yawOf } from './calibration/skyFit.js';
+import { SkyPhoto } from './scene/skyPhoto.js';
 import { PushAlign } from './xr/pushAlign.js'; // [Engineer D] push-gesture auto-align
 import { initSimulatorIfRequested, runAutomatedVrDemo } from './xr/simulator.js';
 
@@ -541,6 +542,15 @@ function handleRaySelect(raycaster) {
   if (target) selectTarget(target);
 }
 
+// ---- Simulated passthrough (demo footage only): a real all-sky photo stands in for the passthrough camera ----
+let skyPhoto = null;
+async function simPassthrough(on) {
+  if (on && !skyPhoto) { skyPhoto = new SkyPhoto(skyScene.skyRoot); await skyPhoto.load(); }
+  skyPhoto?.setVisible(on);
+  skyScene.domeSky.setVisible(!on);
+  if (on) skyPhoto.update(displayDate(), skyScene.lat, skyScene.lon, 0);
+}
+
 // ---- Real-sky mode: only the real sky is drawn; taps are forgiving and teach the alignment ----
 const REAL_TAP_DEG = 3.5;      // the real object can be ~1 deg off ours, plus an unsteady hand
 const REAL_STAR_MAG_CAP = 2.5; // only stars bright enough to actually be seen through passthrough
@@ -820,6 +830,7 @@ async function boot() {
 boot();
 if (import.meta.env.DEV) window.__xw = { get skyScene() { return skyScene; }, get satellites() { return satellites; }, camera, dial, calibrator, state, get snapshot() { return lastSnapshot; },
   /** dev/demo capture hooks */
+  simPassthrough(on = true) { return simPassthrough(on); },
   startXR(mode = 'immersive-vr') { return startXR(mode); },
   selectByName(n) { const t = findTargetByName(n); if (t) selectTarget(t); return !!t; },
   action(a) { handleAction(a); },
@@ -847,6 +858,7 @@ renderer.setAnimationLoop((now) => {
     trimQ.slerp(trimTarget, Math.min(1, dt * 8));
     skyScene.skyRoot.quaternion.copy(_yawQ).multiply(trimQ);
     skyScene.tick(dt, renderer.xr.isPresenting ? renderer.xr.getCamera() : camera);
+    if (skyPhoto?.mesh.visible) skyPhoto.update(displayDate(), skyScene.lat, skyScene.lon, dt);
     updateSatellites();
     const selSat = state.selectedTarget?.kind === 'satellite' ? state.selectedTarget : null;
     if (selSat) {

@@ -84,7 +84,8 @@ if (XR) {
   for (let i = 0; i < 200 && !(await page.evaluate(() => window.__xw.state.inXR)); i++) { await page.evaluate(() => window.__step(33)); await new Promise((r) => setTimeout(r, 20)); }
   for (let i = 0; i < 60; i++) { await page.evaluate(() => window.__step(33)); await new Promise((r) => setTimeout(r, 30)); } // hand models load
 }
-await page.addScriptTag({ path: new URL(XR ? './xrtour.js' : './tour.js', import.meta.url).pathname });
+if (process.env.SIM_MR) { await page.evaluate(() => { window.__xw.simPassthrough(true); }); for (let i = 0; i < 40; i++) { await page.evaluate(() => window.__step(33)); await new Promise((r) => setTimeout(r, 40)); } }
+await page.addScriptTag({ path: new URL(process.env.TOUR ?? (XR ? './xrtour.js' : './tour.js'), import.meta.url).pathname });
 const total = await page.evaluate(() => window.__tour.init());
 const frames = Math.round(total * FPS);
 console.log(`tour ${total}s -> ${frames} frames`);
