@@ -78,6 +78,10 @@ function resetRefine() { refine.reset(); trimTarget.identity(); }
 } // desktop starts with the saved yaw; XR sessions reset it (see startXR)
 calHintEl.textContent = `Calibration: ${calibrator.getOffsetDegrees().toFixed(1)}° offset`;
 const spatialCard = new SpatialInfoCard();
+const CARD_SECONDS = 7; // the XR info card fades out on its own; select again to bring it back
+const _cardV = new THREE.Vector3();
+const _cardR = new THREE.Vector3();
+{ const show = spatialCard.show.bind(spatialCard); spatialCard.show = (...a) => { spatialCard.shownAt = performance.now(); return show(...a); }; }
 scene.add(spatialCard.mesh);
 
 let catalog = null;
@@ -700,7 +704,7 @@ btnSats.onclick = () => handleAction('satellites');
 const pushAlign = new PushAlign({
   renderer, scene, calibrator,
   getCandidates: getReferenceCandidates,
-  isBusy: () => state.calStep !== 'idle' || state.finding !== 'idle' || dialState.scrubbing || previewActive || !dialState.isLive,
+  isBusy: () => state.calStep !== 'idle' || state.finding !== 'idle' || dialState.scrubbing || previewActive || !dialState.isLive || spatialCard.mesh.visible || state.realSky,
   isXR: () => state.inXR,
   haptic: () => { handInput.pulse(1, 60, handInput.controllers[0]); handInput.pulse(1, 60, handInput.controllers[1]); },
   onMessage: (text) => { statusEl.textContent = text; },
@@ -812,6 +816,11 @@ async function boot() {
 
 boot();
 if (import.meta.env.DEV) window.__xw = { get skyScene() { return skyScene; }, get satellites() { return satellites; }, camera, dial, calibrator, state, get snapshot() { return lastSnapshot; },
+  /** dev/demo capture hooks */
+  selectByName(n) { const t = findTargetByName(n); if (t) selectTarget(t); return !!t; },
+  action(a) { handleAction(a); },
+  toggleRealSky(on) { toggleRealSky(on); },
+  look(azDeg, altDeg) { yaw = -azDeg * Math.PI / 180; pitch = altDeg * Math.PI / 180; applyDesktopCamera(); },
   /** dev: the alignment the sky is easing toward (yaw x trim) */
   get alignTarget() { return new THREE.Quaternion().setFromAxisAngle(_Y, calibrator.targetYaw).multiply(trimTarget); },
   /** dev: a real-sky tap along a world direction (set state.inXR to exercise the alignment learning) */
@@ -864,9 +873,19 @@ renderer.setAnimationLoop((now) => {
       hudPanel.group.lookAt(xrCam.position);
 
       if (spatialCard.mesh.visible) {
-        spatialCard.mesh.position.copy(xrCam.position).addScaledVector(forward, 1.5);
-        spatialCard.mesh.position.y -= 0.12;
-        spatialCard.mesh.lookAt(xrCam.position);
+        // the card sits BESIDE the selected object (world-anchored), not in the middle of the view, and fades out
+        const t = state.selectedTarget;
+        const age = (performance.now() - (spatialCard.shownAt ?? 0)) / 1000;
+        if (!t || !t.pos || age > CARD_SECONDS) spatialCard.hide();
+        else {
+          const p = _cardV.set(t.pos.x, t.pos.y, t.pos.z);
+          (t.kind === 'star' ? skyScene.celestialGroup : skyScene.skyRoot).localToWorld(p);
+          const dir = p.sub(xrCam.position).normalize();
+          const right = _cardR.crossVectors(dir, _Y).normalize();
+          spatialCard.mesh.position.copy(xrCam.position).addScaledVector(dir, 2.4).addScaledVector(right, 0.5).addScaledVector(_Y, -0.1);
+          spatialCard.mesh.lookAt(xrCam.position);
+          spatialCard.mesh.scale.setScalar(0.85);
+        }
       }
     }
   }

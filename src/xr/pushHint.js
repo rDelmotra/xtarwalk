@@ -9,7 +9,8 @@ import * as THREE from 'three';
 const LOOK_UP_DEG = 25;
 const REARM_DEG = 15;
 const HOLD_S = 1.0;
-const SHOW_S = 8;
+const SHOW_S = 6;
+const MAX_SHOWS = 2;
 const STALE_S = 180;
 const CYCLE_S = 2.2;
 const SILVER = 0xb8c6e6;
@@ -160,10 +161,12 @@ export class PushHint {
       if (this.mode === 'hint') this.mode = 'idle';
     } else {
       if (pitchDeg < REARM_DEG) this.armed = true;
-      if (this.mode === 'idle' && this.armed && this.needsCalibration && pitchDeg > LOOK_UP_DEG) {
+      // at most twice per session: after that the gesture is known, and a hint over the sky is just clutter
+      if (this.mode === 'idle' && this.armed && this.needsCalibration && (this.timesShown ?? 0) < MAX_SHOWS && pitchDeg > LOOK_UP_DEG) {
         this.lookUpS += dt;
         if (this.lookUpS >= HOLD_S) {
           this.mode = 'hint'; this.showS = SHOW_S; this.armed = false; this.lookUpS = 0; this._placed = false;
+          this.timesShown = (this.timesShown ?? 0) + 1;
         }
       } else if (pitchDeg <= LOOK_UP_DEG) this.lookUpS = 0;
     }
