@@ -117,6 +117,7 @@ export class XRInputManager {
   }
 
   _onSelectStart(slot) {
+    if (slot.inputSource && slot.inputSource.targetRayMode === 'screen') return; // handled by session 'select' with exact frame pose
     slot.pressed = true;
     slot.engaged = false;
     slot.armed = false;
@@ -134,6 +135,7 @@ export class XRInputManager {
   }
 
   _onSelectEnd(slot) {
+    if (slot.inputSource && slot.inputSource.targetRayMode === 'screen') return;
     const { armed, engaged } = slot;
     this._cancel(slot);
     if (armed && !engaged) {

@@ -732,6 +732,17 @@ async function startXR(mode) {
   skyScene?.setARMode(state.isAR);
   hudPanel.group.visible = true;
 
+  session.addEventListener('select', (e) => {
+    if (!e.inputSource || e.inputSource.targetRayMode !== 'screen') return;
+    const refSpace = renderer.xr.getReferenceSpace();
+    const pose = refSpace && e.frame ? e.frame.getPose(e.inputSource.targetRaySpace, refSpace) : null;
+    if (!pose) return;
+    const m = new THREE.Matrix4().fromArray(pose.transform.matrix);
+    const origin = new THREE.Vector3().setFromMatrixPosition(m);
+    const dir = new THREE.Vector3(0, 0, -1).applyMatrix4(new THREE.Matrix4().extractRotation(m)).normalize();
+    handleRaySelect(new THREE.Raycaster(origin, dir));
+  });
+
   session.addEventListener('end', () => {
     state.inXR = false;
     state.isAR = false;
