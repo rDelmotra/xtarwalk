@@ -7,6 +7,7 @@ import { SpatialHudPanel } from './xr/hudPanel.js';
 import { XRInputManager } from './xr/handInput.js';
 import { Wayfinder } from './xr/wayfinder.js';
 import { TimeDial, GAIN_XR } from './time/timeDial.js';
+import { AimReticle } from './ui/aimReticle.js';
 import { DesktopDial } from './ui/desktopDial.js';
 import { AgamottoRing } from './xr/agamottoRing.js';
 import { PushAlign } from './xr/pushAlign.js'; // [Engineer D] push-gesture auto-align
@@ -134,6 +135,8 @@ function dialGoLive() {
   dial.goLive();
   commitDialTime(dial.state);
 }
+
+const aimReticle = new AimReticle({ onSelect: (t) => selectTarget(t) });
 
 const desktopDial = new DesktopDial(document.getElementById('time-dial'), {
   onBegin: (o) => dial.begin(o),
@@ -420,22 +423,29 @@ function handleRaySelect(raycaster) {
     return;
   }
 
-  const hits = raycaster.intersectObjects(skyScene.clickableMeshes, false);
-  if (hits.length > 0) {
-    const target = hits[0].object.userData.target;
-    state.selectedTarget = target;
-    skyScene.highlightTarget(target, camera.position);
-    if (state.inXR) {
-      spatialCard.show(target, state.nightMode);
-    }
-    if (state.calStep === 'idle') {
-      const details = [
-        target.subtitle,
-        `Alt ${target.alt.toFixed(1)}° • Az ${target.az.toFixed(1)}°`,
-        target.extra || (target.mag !== undefined ? `Mag ${target.mag.toFixed(2)}` : '')
-      ].filter(Boolean).join('<br/>');
-      updateHtmlInfo(target.name, details);
-    }
+  // Planets/Moon/Sun first (real meshes); otherwise the nearest of ALL catalogue stars by angle.
+  const hits = raycaster.intersectObjects(skyScene.planetGroup.children, false);
+  let target = hits.length > 0 ? hits[0].object.userData.target : null;
+  if (!target) {
+    const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+    target = skyScene.pickStar(raycaster.ray.direction, cam.fov || 65);
+  }
+  if (target) selectTarget(target);
+}
+
+function selectTarget(target) {
+  state.selectedTarget = target;
+  skyScene.highlightTarget(target, camera.position);
+  if (state.inXR) {
+    spatialCard.show(target, state.nightMode);
+  }
+  if (state.calStep === 'idle') {
+    const details = [
+      target.subtitle,
+      `Alt ${target.alt.toFixed(1)}° • Az ${target.az.toFixed(1)}°`,
+      target.extra || (target.mag !== undefined ? `Mag ${target.mag.toFixed(2)}` : '')
+    ].filter(Boolean).join('<br/>');
+    updateHtmlInfo(target.name, details);
   }
 }
 
@@ -630,6 +640,7 @@ renderer.setAnimationLoop((now) => {
   if (skyScene) {
     skyScene.skyRoot.rotation.y = calibrator.update(dt);
     skyScene.tick(dt, renderer.xr.isPresenting ? renderer.xr.getCamera() : camera);
+    aimReticle.update(now, camera, skyScene, state.selectedTarget, { visible: !renderer.xr.isPresenting });
     updatePulse(now);
     if (state.finding === 'tracking') {
       // Positions are recomputed every 15s; re-resolve the target by name each frame.

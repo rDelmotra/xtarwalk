@@ -23,6 +23,8 @@ const STAR_VERT = /* glsl */ `
   varying float vRh;
   varying float vAmpC;
   varying float vAmpH;
+  varying float vSpike;
+  varying float vSpikeLen;
   void main() {
     vAlt = normalize((modelMatrix * vec4(position, 1.0)).xyz).y; // world space: celestialGroup may be rotated
     float lum = 1.45 * pow(10.0, -0.168 * aMag); // 1.22*flux^0.42: mag6 .12, mag4 .26, mag0 1.22, Sirius 2.15
@@ -54,13 +56,16 @@ const STAR_VERT = /* glsl */ `
     vec3 sat = clamp(mix(vec3(dot(aColor, vec3(0.333))), aColor, 1.7), 0.0, 1.0);
     vCore = mix(vec3(1.0), sat, 0.32) * trans * flick;   // cores keep a hint of the star's colour
     vHalo = sat * trans * flick;
-    vAmpC = clamp(0.55 + 0.8 * (lum - 0.12), 0.0, 1.35) * tw;
-    vAmpH = 0.6 * pow(min(lum / 1.22, 1.3), 1.2) * tw;
+    vAmpC = clamp(0.75 + 0.9 * (lum - 0.12), 0.0, 1.6) * tw;
+    float brightOnly = smoothstep(2.8, 0.5, aMag);                   // only stars brighter than ~mag 2.5 glow
+    vAmpH = 0.32 * pow(min(lum / 1.22, 1.4), 1.3) * tw * brightOnly;
+    vSpike = smoothstep(2.3, -0.3, aMag) * tw;                       // 4-point sparkle on the brightest
 
     float sc = uPixelScale;
-    vSigma = (0.95 + 1.0 * smoothstep(0.1, 0.9, lum)) * sc;
-    vRh = (2.0 + 9.0 * min(lum, 1.4)) * sc;
-    float half_ = max(vSigma * 3.5, vRh * 2.4) + 1.0;
+    vSigma = (0.55 + 0.75 * smoothstep(0.1, 1.6, lum)) * sc;        // crisp: ~0.55 px faint .. 1.3 px Sirius
+    vRh = (1.5 + 5.0 * min(lum, 1.6)) * sc;
+    vSpikeLen = (4.0 + 9.0 * min(lum, 2.0)) * sc * step(0.01, vSpike);
+    float half_ = max(max(vSigma * 3.5, vRh * 2.4), vSpikeLen) + 1.0;
     vSize = min(2.0 * half_, 128.0);
     gl_PointSize = vSize;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
@@ -79,13 +84,25 @@ const STAR_FRAG = /* glsl */ `
   varying float vRh;
   varying float vAmpC;
   varying float vAmpH;
+  varying float vSpike;
+  varying float vSpikeLen;
   void main() {
-    float r = length(gl_PointCoord - vec2(0.5)) * vSize;
+    vec2 d = (gl_PointCoord - vec2(0.5)) * vSize;
+    float r = length(d);
     float half_ = 0.5 * vSize;
-    float core = vAmpC * exp(-0.5 * r * r / (vSigma * vSigma));
+    // crisp pinpoint: a tight gaussian plus a hard 1-px hot centre
+    float core = vAmpC * (exp(-0.5 * r * r / (vSigma * vSigma)) + 0.6 * exp(-r * r * 2.0));
     float halo = vAmpH * exp(-r / (0.38 * vRh));
-    float edge = 1.0 - smoothstep(0.65 * half_, half_, r);
-    vec3 col = (vCore * core + vHalo * halo) * edge;
+    // thin 4-point sparkle (vertical + horizontal), fading along its length
+    float sp = 0.0;
+    if (vSpike > 0.0) {
+      vec2 a = abs(d);
+      float along = 1.0 - smoothstep(0.0, vSpikeLen, max(a.x, a.y));
+      sp = (exp(-a.y * a.y * 1.6) * smoothstep(vSpikeLen, 0.0, a.x) + exp(-a.x * a.x * 1.6) * smoothstep(vSpikeLen, 0.0, a.y));
+      sp *= 0.55 * vSpike * along;
+    }
+    float edge = 1.0 - smoothstep(0.75 * half_, half_, r);
+    vec3 col = (vCore * (core + sp) + vHalo * halo) * edge;
     float l = dot(col, vec3(0.3, 0.59, 0.11));
     col = mix(col, vec3(1.0, 0.22, 0.18) * l * 1.2, uNightMode);
     float clip = mix(1.0, smoothstep(-0.01, 0.02, vAlt), uHorizonClip);

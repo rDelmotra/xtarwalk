@@ -84,7 +84,11 @@ export async function loadSkyCatalog() {
       id: f.id,
       name: meta?.name || null,
       bayer: meta?.bayer || '',
+      flam: meta?.flam || '',
+      hip: meta?.hip || `HIP ${f.id}`,
+      hd: meta?.hd || '',
       constellation: meta?.c || '',
+      bv: Number.isFinite(bv) ? bv : null,
       mag,
       rgb: bvToRgb(bv),
       eqj: eqjVec(lon, lat)
@@ -102,6 +106,8 @@ export async function loadSkyCatalog() {
       eqj: eqjVec(lon, lat)
     };
   });
+
+  for (const st of stars) st.conName = constNameById.get(st.constellation) || '';
 
   const lineSegments = [];
   for (const f of linesRes.features) {
@@ -244,4 +250,23 @@ function describeMoonPhase(deg) {
   if (deg < 247.5) return 'Waning Gibbous';
   if (deg < 292.5) return 'Last Quarter';
   return 'Waning Crescent';
+}
+
+/** Human-readable colour/type hint from the B−V colour index (what the eye sees). */
+export function describeStarColour(bv) {
+  if (bv === null || bv === undefined) return '';
+  if (bv < -0.1) return 'Blue-white star';
+  if (bv < 0.3) return 'White star';
+  if (bv < 0.6) return 'Yellow-white star';
+  if (bv < 0.9) return 'Yellow star';
+  if (bv < 1.3) return 'Orange star';
+  return 'Red-orange star';
+}
+
+/** Best display name: proper name, else Bayer/Flamsteed + constellation, else the HIP number. */
+export function starDisplayName(st) {
+  if (st.name) return st.name;
+  if (st.bayer && st.constellation) return `${st.bayer} ${st.constellation}`;
+  if (st.flam && st.constellation) return `${st.flam} ${st.constellation}`;
+  return st.hip;
 }

@@ -205,6 +205,37 @@
     .dial-live:hover:not(:disabled) { background: var(--accent-bg); color: var(--accent); }
     .dial-live.is-live { opacity: 0; pointer-events: none; } /* only shown when not live */
 
+    /* ---------- aim reticle, name pill, off-screen chevron (Star Walk style, instrument theme) ---------- */
+    .aim-layer { position: fixed; inset: 0; pointer-events: none; z-index: 4; }
+    .aim-layer.hidden { display: none; }
+    .aim-reticle {
+      position: absolute; left: 50%; top: 50%; width: 56px; height: 56px; transform: translate(-50%, -50%);
+      fill: none; stroke: var(--accent); stroke-width: 1; opacity: 0.38;
+    }
+    .aim-reticle .dot { fill: var(--accent); stroke: none; }
+    .aim-name {
+      position: absolute; left: 50%; bottom: calc(var(--s) * 3); transform: translate(-50%, 6px);
+      pointer-events: auto; padding: 8px 20px; font-size: 13px; font-weight: 500; letter-spacing: 0.06em;
+      text-transform: none; color: var(--text);
+      background: var(--bg); border: 1px solid var(--line); border-radius: 999px;
+      backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+      opacity: 0; transition: opacity 0.35s, transform 0.35s;
+    }
+    .aim-name.show { opacity: 1; transform: translate(-50%, 0); }
+    .aim-name:not(.show) { pointer-events: none; }
+    .aim-arrow {
+      position: absolute; left: -20px; top: -20px; width: 40px; height: 40px;
+      opacity: 0; transition: opacity 0.3s;
+      display: flex; flex-direction: column; align-items: center;
+    }
+    .aim-arrow.show { opacity: 1; }
+    .aim-arrow svg { width: 26px; height: 26px; fill: var(--accent); opacity: 0.75;
+      filter: drop-shadow(0 0 6px var(--glow)); transition: transform 0.12s linear; }
+    .aim-arrow span {
+      margin-top: 4px; white-space: nowrap; font-size: 10px; font-weight: 600; letter-spacing: 0.14em;
+      text-transform: uppercase; color: var(--text-dim);
+    }
+
     /* ---------- responsive ---------- */
     @media (max-width: 760px) {
       #overlay { padding: var(--s) calc(var(--s) * 1.5); }

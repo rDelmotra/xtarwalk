@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { SKY_RADIUS, altAzToVec3, computeSolarSystem } from '../astro/skyEngine.js';
+import { SKY_RADIUS, altAzToVec3, computeSolarSystem, describeStarColour, starDisplayName } from '../astro/skyEngine.js';
 import { makeTextSprite } from './labels.js';
 import { DomeSky } from './domeSky.js';
 import { Compass } from './compass.js';
@@ -101,6 +101,9 @@ export class SkyScene {
 
   _buildPlanets() {
     this.moon = new Moon(1.0);
+    this._pickQ = new THREE.Quaternion();
+    this._pickV = new THREE.Vector3();
+    this._pickV2 = new THREE.Vector3();
     this._sunLocal = new THREE.Vector3(0, 1, 0);
     this._sunWorld = new THREE.Vector3();
     this.planetGroup = new THREE.Group();
@@ -522,6 +525,49 @@ export class SkyScene {
     this.selectionRing.geometry.dispose();
     this.selectionRing.material.dispose();
     this.scene.remove(this.skyRoot);
+  }
+
+  /**
+   * Pick ANY catalogue star (all 5,044 naked-eye stars) nearest to a world-space direction, by angle,
+   * slightly favouring brighter stars. Returns a selection target (pos in celestialGroup-local space) or null.
+   */
+  pickStar(dirWorld, fovDeg = 65) {
+    const snap = this._lastSnapshot;
+    if (!snap) return null;
+    const P = snap.starPositions;
+    const stars = this.catalog.stars;
+    // world -> celestialGroup local
+    this.celestialGroup.getWorldQuaternion(this._pickQ).invert();
+    const d = this._pickV.copy(dirWorld).normalize().applyQuaternion(this._pickQ);
+    const maxDeg = Math.max(0.8, fovDeg * 0.022);
+    const cosMax = Math.cos(maxDeg * Math.PI / 180);
+    let best = -1, bestScore = Infinity;
+    const R = SKY_RADIUS;
+    for (let i = 0; i < stars.length; i++) {
+      const c = (P[i * 3] * d.x + P[i * 3 + 1] * d.y + P[i * 3 + 2] * d.z) / R;
+      if (c < cosMax) continue;
+      const ang = Math.acos(Math.min(1, c)) * 180 / Math.PI;
+      const score = ang / maxDeg + 0.06 * stars[i].mag; // a bright star wins over a slightly closer faint one
+      if (score < bestScore) { bestScore = score; best = i; }
+    }
+    if (best < 0) return null;
+    const st = stars[best];
+    const pos = { x: P[best * 3], y: P[best * 3 + 1], z: P[best * 3 + 2] };
+    // alt/az in the current (possibly scrub-rotated) sky
+    const w = this._pickV2.set(pos.x, pos.y, pos.z).applyQuaternion(this.celestialGroup.quaternion);
+    const alt = Math.asin(Math.max(-1, Math.min(1, w.y / R))) * 180 / Math.PI;
+    const az = ((Math.atan2(w.x, -w.z) * 180 / Math.PI) + 360) % 360;
+    const ids = [st.name && st.bayer ? `${st.bayer} ${st.constellation}` : '', st.hip, st.hd].filter(Boolean);
+    return {
+      kind: 'star',
+      name: starDisplayName(st),
+      subtitle: [describeStarColour(st.bv), st.conName ? `in ${st.conName}` : ''].filter(Boolean).join(' '),
+      mag: st.mag,
+      extra: `Mag ${st.mag.toFixed(2)}${st.bv !== null ? ` • B−V ${st.bv.toFixed(2)}` : ''}<br/>${ids.join(' • ')}`,
+      alt,
+      az,
+      pos
+    };
   }
 
   highlightTarget(target, cameraPos) {
