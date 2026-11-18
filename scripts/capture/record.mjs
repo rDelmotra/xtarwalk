@@ -6,9 +6,9 @@ import fs from 'node:fs';
 
 const FPS = 30;
 const STRIDE = Number(process.env.STRIDE ?? 1); // >1: quick preview, screenshot every Nth frame
-const OUT = '/tmp/xw-capture/frames';
+const OUT = process.env.OUT ?? '/tmp/xw-capture/frames';
 const START_SHIFT_H = Number(process.env.SHIFT_H ?? -2.5); // start the sky this many hours from now
-fs.rmSync('/tmp/xw-capture', { recursive: true, force: true });
+fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
 
 // ---- fake clock: performance.now, Date, rAF and timers all advance only in __step(ms) ----
@@ -49,6 +49,12 @@ const page = await browser.newPage();
 page.on('console', (m) => { if (m.type() === 'error') console.log('[page]', m.text().slice(0, 300)); });
 page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 await page.evaluateOnNewDocument(SHIM);
+const XR = process.env.MODE === 'xr';
+if (XR) {
+  // Meta's Immersive Web Emulation Runtime: a Quest 3 in hand-tracking mode, mono view for the recording
+  const IWER = fs.readFileSync(new URL('../../node_modules/iwer/build/iwer.min.js', import.meta.url), 'utf8');
+  await page.evaluateOnNewDocument(IWER + `;window.__dev = new IWER.XRDevice(IWER.metaQuest3, { stereoEnabled: false }); __dev.primaryInputMode = 'hand'; __dev.installRuntime();`);
+}
 // serve a static dev-mode build straight from disk (no Vite client: its reconnect logic reloads under a fake clock)
 // build it with: NODE_ENV=development npx vite build --mode development --outDir /tmp/xw-devbuild
 const ROOT = process.env.BUILD_DIR ?? '/tmp/xw-devbuild';
@@ -56,7 +62,7 @@ const MIME = { html: 'text/html', js: 'text/javascript', css: 'text/css', json: 
 await page.setRequestInterception(true);
 page.on('request', (req) => {
   const u = new URL(req.url());
-  if (u.host !== 'xtarwalk.local') return req.abort(); // offline capture (CelesTrak etc. are skipped)
+  if (u.host !== 'xtarwalk.local') return u.host.includes('celestrak') ? req.abort() : req.continue(); // hand models come from the CDN
   let p = decodeURIComponent(u.pathname); if (p.endsWith('/')) p += 'index.html';
   const file = ROOT + p;
   if (!fs.existsSync(file)) return req.respond({ status: 404, body: '' });
@@ -73,12 +79,17 @@ for (let i = 0; i < 400; i++) {
 }
 
 await page.addStyleTag({ path: new URL('./tour.css', import.meta.url).pathname });
-await page.addScriptTag({ path: new URL('./tour.js', import.meta.url).pathname });
+if (XR) {
+  await page.evaluate(() => { window.__xw.startXR('immersive-vr'); });
+  for (let i = 0; i < 200 && !(await page.evaluate(() => window.__xw.state.inXR)); i++) { await page.evaluate(() => window.__step(33)); await new Promise((r) => setTimeout(r, 20)); }
+  for (let i = 0; i < 60; i++) { await page.evaluate(() => window.__step(33)); await new Promise((r) => setTimeout(r, 30)); } // hand models load
+}
+await page.addScriptTag({ path: new URL(XR ? './xrtour.js' : './tour.js', import.meta.url).pathname });
 const total = await page.evaluate(() => window.__tour.init());
 const frames = Math.round(total * FPS);
 console.log(`tour ${total}s -> ${frames} frames`);
 // settle the first view without recording
-for (let i = 0; i < 45; i++) await page.evaluate((dt) => { window.__tour.at(0); window.__step(dt); }, 1000 / FPS);
+for (let i = 0; i < 150; i++) await page.evaluate((dt) => { window.__tour.at(0); window.__step(dt); }, 1000 / FPS);
 
 for (let f = 0; f < frames; f++) {
   const tSec = f / FPS;

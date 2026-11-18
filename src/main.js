@@ -55,6 +55,9 @@ renderer.xr.enabled = true;
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
+// Soft light for the tracked-hand meshes (everything in the sky uses unlit shaders; without this the hands are black)
+scene.add(new THREE.HemisphereLight(0xcfe3ff, 0x1a2230, 1.6));
+{ const key = new THREE.DirectionalLight(0xffffff, 1.2); key.position.set(0.4, 1, 0.6); scene.add(key); }
 scene.background = new THREE.Color(0x02040a);
 
 const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 250);
@@ -817,6 +820,7 @@ async function boot() {
 boot();
 if (import.meta.env.DEV) window.__xw = { get skyScene() { return skyScene; }, get satellites() { return satellites; }, camera, dial, calibrator, state, get snapshot() { return lastSnapshot; },
   /** dev/demo capture hooks */
+  startXR(mode = 'immersive-vr') { return startXR(mode); },
   selectByName(n) { const t = findTargetByName(n); if (t) selectTarget(t); return !!t; },
   action(a) { handleAction(a); },
   toggleRealSky(on) { toggleRealSky(on); },
