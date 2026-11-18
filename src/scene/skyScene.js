@@ -215,6 +215,7 @@ export class SkyScene {
     const sv = altAzToVec3(alt, az, 1);
     this._sunLocal.set(sv.x, sv.y, sv.z);
     this._dayFadeNow = dayFadeForSunAlt(alt);
+    this.sunAlt = alt;
     this.domeSky.setSun(sv);
     const fade = dayFadeForSunAlt(alt);
     this.starField.setDayFade(fade);
@@ -485,6 +486,8 @@ export class SkyScene {
     const len = Math.hypot(m.x, m.y, m.z) || 1;
     const cosE = (m.x * this._sunLocal.x + m.y * this._sunLocal.y + m.z * this._sunLocal.z) / len;
     const phase = (1 - cosE) / 2; // illuminated fraction from the Sun–Moon elongation
+    this.moonPhase = phase;
+    this.moonAlt = e.target.alt;
     this.moon.update(this._sunWorld, phase, this._dayFadeNow ?? 1, !!this.nightMode);
   }
 
@@ -527,6 +530,13 @@ export class SkyScene {
     this.scene.remove(this.skyRoot);
   }
 
+  /** Limiting magnitude: stars fainter than this fade out, and cannot be picked. */
+  setMagLimit(m) {
+    this.magLimit = m;
+    this.starField.setMagLimit(m);
+    this.starTrails.setMagLimit(m);
+  }
+
   /**
    * Pick ANY catalogue star (all 5,044 naked-eye stars) nearest to a world-space direction, by angle,
    * slightly favouring brighter stars. Returns a selection target (pos in celestialGroup-local space) or null.
@@ -546,6 +556,7 @@ export class SkyScene {
     for (let i = 0; i < stars.length; i++) {
       const c = (P[i * 3] * d.x + P[i * 3 + 1] * d.y + P[i * 3 + 2] * d.z) / R;
       if (c < cosMax) continue;
+      if (stars[i].mag > (this.magLimit ?? 9) + 0.2) continue; // not drawn -> not pickable
       const ang = Math.acos(Math.min(1, c)) * 180 / Math.PI;
       const score = ang / maxDeg + 0.06 * stars[i].mag; // a bright star wins over a slightly closer faint one
       if (score < bestScore) { bestScore = score; best = i; }

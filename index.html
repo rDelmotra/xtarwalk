@@ -155,8 +155,15 @@
       opacity: 0.34;
       transition: opacity 1.2s ease, filter 1.2s ease;
     }
-    #time-dial.active {
-      opacity: 1; filter: drop-shadow(0 0 18px var(--glow));
+    #mag-dial {
+      /* Star depth: mirror of the time dial, centred in the left third. */
+      position: fixed; left: calc(100% / 6); top: 50%; transform: translate(-50%, -50%);
+      width: min(200px, 24vw); aspect-ratio: 1; pointer-events: auto; z-index: 5;
+      user-select: none; -webkit-user-select: none; touch-action: none;
+      opacity: 0.34; transition: opacity 1.2s ease;
+    }
+    #time-dial.active, #mag-dial.active {
+      opacity: 1;
       transition: opacity 0.25s ease, filter 0.25s ease;
     }
     .dial-root .d-grad, .dial-root .d-t1, .dial-root .d-t3 { transition: opacity 1.2s ease; }
@@ -174,7 +181,7 @@
     .d-grad line { stroke: var(--text-dim); stroke-width: 0.6; opacity: 0.55; }
     .d-grad line.m { stroke-width: 0.9; opacity: 0.9; }
     .d-ring-thin { fill: none; stroke: var(--line); stroke-width: 1; }
-    .d-night { fill: none; stroke: var(--night-band); stroke-width: 6; stroke-linecap: butt; }
+    .d-night { fill: none; stroke: var(--night-band); stroke-width: 3; stroke-linecap: butt; }
     .d-progress { fill: none; stroke: var(--accent); stroke-width: 1.2; stroke-linecap: round; opacity: 0.85; }
     .d-tick { stroke: var(--text-dim); stroke-width: 0.8; opacity: 0.7; }
     .d-tick.major { stroke: var(--text); stroke-width: 1; opacity: 0.85; }
@@ -187,7 +194,7 @@
     .d-t1, .d-t2, .d-t3 { text-anchor: middle; fill: var(--text); pointer-events: none;
       font-family: inherit; font-variant-numeric: tabular-nums; }
     .d-t1 { font-size: 9px; font-weight: 600; letter-spacing: 0.28em; text-transform: uppercase; fill: var(--text-dim); }
-    .d-t2 { font-size: 26px; font-weight: 200; letter-spacing: 0.04em; }
+    .d-t2 { font-size: 24px; font-weight: 200; letter-spacing: 0.04em; }
     .d-t3 { font-size: 10px; font-weight: 600; letter-spacing: 0.16em; fill: var(--accent); }
     .dial-hint {
       position: absolute; left: 50%; top: -26px; transform: translate(-50%, 4px);
@@ -246,6 +253,7 @@
       .tool { padding: 6px 9px; }
       .bottom-bar { flex-direction: column; align-items: stretch; margin-bottom: 120px; gap: var(--s); }
       #time-dial { top: auto; left: auto; bottom: 40px; right: 16px; width: 150px; transform: none; }
+      #mag-dial { display: none; }
       .d-t2 { font-size: 24px; }
       #info-card { max-width: none; min-width: 0; }
       .hint { align-self: flex-start; }
@@ -286,6 +294,7 @@
     </div>
   </div>
   <div id="time-dial"></div>
+  <div id="mag-dial"></div>
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>

@@ -8,6 +8,8 @@ import { XRInputManager } from './xr/handInput.js';
 import { Wayfinder } from './xr/wayfinder.js';
 import { TimeDial, GAIN_XR } from './time/timeDial.js';
 import { AimReticle } from './ui/aimReticle.js';
+import { MagDial } from './ui/magDial.js';
+import { MagControl, autoLimit } from './sky/magLimit.js';
 import { DesktopDial } from './ui/desktopDial.js';
 import { AgamottoRing } from './xr/agamottoRing.js';
 import { PushAlign } from './xr/pushAlign.js'; // [Engineer D] push-gesture auto-align
@@ -96,7 +98,34 @@ let lastHourMark = 0;
 let keyTurnTimer = 0;
 
 const agamottoRing = new AgamottoRing(scene);
+// ---- Star depth (limiting magnitude): auto from the sky, LEFT-hand twist / left dial to adjust ----
+const magCtl = new MagControl();
+const magRing = new AgamottoRing(scene);
+let magTwisting = false;
+let magLastAuto = 0;
+const magDial = new MagDial(document.getElementById('mag-dial'), {
+  onTurn: (d) => { magCtl.turn(d); applyMag(); },
+  onAuto: () => { magCtl.resetToAuto(); applyMag(); }
+});
+function applyMag(external = false) {
+  skyScene?.setMagLimit(magCtl.limit);
+  magDial.render(magCtl, { externalTurn: external });
+}
+/** Re-estimate what the eye can see (twilight + moonlight), at most twice a second. */
+function updateAutoMag(now) {
+  if (!skyScene || now - magLastAuto < 500) return;
+  magLastAuto = now;
+  magCtl.setAuto(autoLimit({ sunAltDeg: skyScene.sunAlt ?? -30, moonAltDeg: skyScene.moonAlt ?? -10, moonPhase: skyScene.moonPhase ?? 0 }));
+  applyMag();
+}
+/** A DialState-shaped object so the same Agamotto ring can show the star-depth twist. */
+function magRingState() {
+  const frac = (magCtl.limit - 1) / 5.5;
+  return { dialAngleDeg: frac * 270, label: `Star depth · mag ${magCtl.limit.toFixed(1)}`, relLabel: magCtl.labels.sub,
+    edge: 'none', resistance: 0, dayShift: 0, scrubbing: magTwisting };
+}
 const ringAim = new THREE.Object3D();
+const magAim = new THREE.Object3D();
 const ringPos = new THREE.Vector3();
 const ringDir = new THREE.Vector3();
 const ringCamPos = new THREE.Vector3();
@@ -461,7 +490,10 @@ const handInput = new XRInputManager(renderer, scene, handleRaySelect, {
   },
   onScrubBegin: () => dial.begin(),
   onScrubTurn: (deg) => dial.turn(deg, { gain: GAIN_XR }),
-  onScrubEnd: () => dial.end()
+  onScrubEnd: () => dial.end(),
+  onMagBegin: () => { magTwisting = true; },
+  onMagTurn: (d) => { magCtl.turn(d); applyMag(true); },
+  onMagEnd: () => { magTwisting = false; }
 });
 
 // Desktop mouse-look & click selection
@@ -684,6 +716,21 @@ renderer.setAnimationLoop((now) => {
     state: dialState,
     nightMode: state.nightMode
   });
+
+  // Left-hand star-depth ring
+  updateAutoMag(now);
+  const magCtrl = handInput.magController;
+  const magVisible = state.inXR && magTwisting && !!magCtrl;
+  if (magVisible) {
+    magCtrl.getWorldPosition(ringPos);
+    magCtrl.getWorldDirection(ringDir);
+    ringPos.addScaledVector(ringDir, -0.05);
+    renderer.xr.getCamera().getWorldPosition(ringCamPos);
+    magAim.position.copy(ringPos);
+    magAim.lookAt(ringCamPos);
+  }
+  magRing.update(dt, { visible: magVisible, position: magAim.position, quaternion: magAim.quaternion,
+    state: magRingState(), nightMode: state.nightMode });
 
   renderer.render(scene, camera);
 });

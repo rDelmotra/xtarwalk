@@ -56,38 +56,21 @@ export class DesktopDial {
     this.svg = svg;
     this.root.appendChild(svg);
 
-    // Face + a fine graduation ring (like a sextant's vernier) that drifts slowly; faster while scrubbing.
-    el('circle', { cx: C, cy: C, r: 104, class: 'd-face' }, svg);
-    this.rune = el('g', { class: 'd-grad' }, svg);
-    for (let i = 0; i < 120; i++) {
-      const m = i % 10 === 0;
-      const [x0, y0] = pt(m ? 95 : 97.5, i * 3);
-      const [x1, y1] = pt(101, i * 3);
-      el('line', { x1: x0, y1: y0, x2: x1, y2: y1, class: m ? 'm' : '' }, this.rune);
-    }
-
-    // Track, night arc, progress arc.
-    el('circle', { cx: C, cy: C, r: R_TRACK + 9, class: 'd-ring-thin' }, svg);
-    el('circle', { cx: C, cy: C, r: R_TRACK - 9, class: 'd-ring-thin' }, svg);
-        this.night = el('path', { class: 'd-night', d: '' }, svg);
+    // Minimal: one hairline circle, the night band, a thin progress arc, 4 marks, a needle dot.
+    this.rune = el('g', {}, svg); // (kept for tickSpin; intentionally empty)
+    el('circle', { cx: C, cy: C, r: R_TRACK, class: 'd-ring-thin' }, svg);
+    this.night = el('path', { class: 'd-night', d: '' }, svg);
     this.progress = el('path', { class: 'd-progress', d: '' }, svg);
-
-    // Hour ticks (24 over the window).
-    for (let i = 0; i < 24; i++) {
-      const major = i % 6 === 0;
-      const [x0, y0] = pt(R_TRACK + (major ? 5 : 2.5), i * 15);
-      const [x1, y1] = pt(R_TRACK - (major ? 5 : 2.5), i * 15);
-      el('line', { x1: x0, y1: y0, x2: x1, y2: y1, class: major ? 'd-tick major' : 'd-tick' }, svg);
+    for (let i = 0; i < 4; i++) {
+      const [x0, y0] = pt(R_TRACK + 4, i * 90);
+      const [x1, y1] = pt(R_TRACK - 4, i * 90);
+      el('line', { x1: x0, y1: y0, x2: x1, y2: y1, class: 'd-tick major' }, svg);
     }
-    // Sun-set / sun-rise glyphs (positioned in render()).
-    this.setG = this.makeGlyph(svg, true);
-    this.riseG = this.makeGlyph(svg, false);
-    // Edge glow ring.
+    this.setG = el('g', { visibility: 'hidden' }, svg);
+    this.riseG = el('g', { visibility: 'hidden' }, svg);
     this.edgeRing = el('circle', { cx: C, cy: C, r: R_TRACK, class: 'd-edge' }, svg);
-    // Needle.
     this.needle = el('g', { class: 'd-needle' }, svg);
-    el('line', { x1: C, y1: C - 40, x2: C, y2: C - R_TRACK + 4, class: 'd-needle-line' }, this.needle);
-    el('circle', { cx: C, cy: C - R_TRACK, r: 3.6, class: 'd-needle-dot' }, this.needle);
+    el('circle', { cx: C, cy: C - R_TRACK, r: 3.2, class: 'd-needle-dot' }, this.needle);
 
     // Centre text.
     this.t1 = el('text', { x: C, y: C - 14, class: 'd-t1' }, svg);
@@ -250,8 +233,6 @@ export class DesktopDial {
     } else {
       this.night.setAttribute('d', '');
     }
-    this.placeGlyph(this.setG, s.sunset, s);
-    this.placeGlyph(this.riseG, s.sunrise, s);
 
     this.t1.textContent = l1;
     this.t2.textContent = l2;

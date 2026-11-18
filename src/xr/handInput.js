@@ -24,6 +24,12 @@ export class XRInputManager {
     this.onScrubBegin = opts.onScrubBegin || (() => {});
     this.onScrubTurn = opts.onScrubTurn || (() => {});
     this.onScrubEnd = opts.onScrubEnd || (() => {});
+    // LEFT hand twist = star-depth (limiting magnitude) dial; RIGHT hand (or unknown) twist = time.
+    this.onMagBegin = opts.onMagBegin || (() => {});
+    this.onMagTurn = opts.onMagTurn || (() => {});
+    this.onMagEnd = opts.onMagEnd || (() => {});
+    /** controller currently twisting the magnitude dial, or null */
+    this.magController = null;
     this.raycaster = new THREE.Raycaster();
     this.tempMatrix = new THREE.Matrix4();
     this._q = new THREE.Quaternion();
@@ -59,7 +65,8 @@ export class XRInputManager {
         armed: false,
         engaged: false,
         gesture: new TwistGesture({ engageDeg: 8 }),
-        startRay: new THREE.Raycaster()
+        startRay: new THREE.Raycaster(),
+        hand: null
       };
       this.slots.push(slot);
 
@@ -72,6 +79,7 @@ export class XRInputManager {
       controller.addEventListener('selectend', () => this._onSelectEnd(slot));
 
       const hand = renderer.xr.getHand(i);
+      slot.hand = hand;
       hand.add(handFactory.createHandModel(hand, 'mesh'));
       scene.add(hand);
 
@@ -86,15 +94,36 @@ export class XRInputManager {
     ray.set(this._origin, this._dir);
   }
 
+  /** 'mag' for the left hand, 'time' otherwise. */
+  _channel(slot) {
+    return slot.inputSource && slot.inputSource.handedness === 'left' ? 'mag' : 'time';
+  }
+
+  _active(ch) { return ch === 'mag' ? this.magController : this.scrubController; }
+
+  /**
+   * Orientation used for the twist. With tracked HANDS the target ray is shoulder-driven and may not roll
+   * with the wrist, so use the wrist joint (its -Z runs along the hand, so twist about it = forearm roll,
+   * the "turning a dial" motion). With controllers, the controller grip/ray orientation rolls directly.
+   */
+  _twistQuat(slot, out) {
+    const wrist = slot.hand && slot.hand.joints && slot.hand.joints['wrist'];
+    if (slot.inputSource && slot.inputSource.hand && wrist && wrist.visible !== false) {
+      return wrist.getWorldQuaternion(out);
+    }
+    return slot.controller.getWorldQuaternion(out);
+  }
+
   _onSelectStart(slot) {
     slot.pressed = true;
     slot.engaged = false;
     slot.armed = false;
     this._fillRay(slot.controller, slot.startRay);
-    const otherScrubbing = this.scrubController && this.scrubController !== slot.controller;
+    const act = this._active(this._channel(slot));
+    const otherScrubbing = act && act !== slot.controller;
     if (!otherScrubbing && this.canScrub(slot.startRay)) {
       slot.armed = true;
-      slot.controller.getWorldQuaternion(this._q);
+      this._twistQuat(slot, this._q);
       slot.gesture.start(this._q);
       return; // decide on release (select) or engage (scrub)
     }
@@ -119,6 +148,10 @@ export class XRInputManager {
       this.scrubController = null;
       this.onScrubEnd();
     }
+    if (wasEngaged && this.magController === slot.controller) {
+      this.magController = null;
+      this.onMagEnd();
+    }
   }
 
   /** Call once per animation frame. */
@@ -126,16 +159,20 @@ export class XRInputManager {
     for (let i = 0; i < this.slots.length; i++) {
       const slot = this.slots[i];
       if (!slot.armed) continue;
-      slot.controller.getWorldQuaternion(this._q);
+      this._twistQuat(slot, this._q);
       const r = slot.gesture.update(this._q, dt);
       if (!r.engaged) continue;
+      const ch = this._channel(slot);
       if (!slot.engaged) {
-        if (this.scrubController) continue; // another hand got there first
+        if (this._active(ch)) continue; // another hand got there first
         slot.engaged = true;
-        this.scrubController = slot.controller;
-        this.onScrubBegin(slot.controller);
+        if (ch === 'mag') { this.magController = slot.controller; this.onMagBegin(slot.controller); }
+        else { this.scrubController = slot.controller; this.onScrubBegin(slot.controller); }
       }
-      if (slot.engaged && r.deltaDeg !== 0) this.onScrubTurn(r.deltaDeg, slot.controller);
+      if (slot.engaged && r.deltaDeg !== 0) {
+        if (ch === 'mag') this.onMagTurn(r.deltaDeg, slot.controller);
+        else this.onScrubTurn(r.deltaDeg, slot.controller);
+      }
     }
   }
 

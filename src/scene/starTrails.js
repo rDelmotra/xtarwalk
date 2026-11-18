@@ -25,6 +25,7 @@ const TRAIL_VERT = /* glsl */ `
   attribute float aT;
   attribute vec3 aColor;
   attribute float aMag;
+  uniform float uMagLimit;
   uniform vec3 uPole;
   uniform float uAngleTail;
   uniform float uAngleHead;
@@ -48,7 +49,8 @@ const TRAIL_VERT = /* glsl */ `
     vec3 col = mix(aColor, vec3(1.0), 0.45);
     float l = dot(col, vec3(0.3, 0.59, 0.11));
     col = mix(col, vec3(1.0, 0.22, 0.18) * l * 1.2, uNightMode);
-    vCol = vec4(col, 0.85 * fade * bright * uDayFade * clip * uTrailOpacity);
+    float vis = smoothstep(uMagLimit + 0.35, uMagLimit - 0.35, aMag);
+    vCol = vec4(col, 0.85 * fade * bright * uDayFade * clip * uTrailOpacity * vis);
     gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
   }
 `;
@@ -96,6 +98,7 @@ export class StarTrails {
         uAngleTail: { value: 0 },
         uAngleHead: { value: 0 },
         uDayFade: { value: 1 },
+        uMagLimit: { value: 6.5 },
         uHorizonClip: { value: 1 },
         uTrailOpacity: { value: 0 },
         uNightMode: { value: 0 }
@@ -191,6 +194,7 @@ export class StarTrails {
   }
 
   setDayFade(f) { this.material.uniforms.uDayFade.value = f; }
+  setMagLimit(m) { this.material.uniforms.uMagLimit.value = m; }
   setHorizonClip(on) { this.material.uniforms.uHorizonClip.value = on ? 1 : 0; }
   setNightMode(on) { this.material.uniforms.uNightMode.value = on ? 1 : 0; }
 

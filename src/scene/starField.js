@@ -14,6 +14,7 @@ const STAR_VERT = /* glsl */ `
   attribute vec3 aColor;
   attribute vec2 aRand;
   uniform float uTime;
+  uniform float uMagLimit; // stars fainter than this fade out (limiting magnitude)
   uniform float uPixelScale;
   varying vec3 vCore;
   varying vec3 vHalo;
@@ -56,6 +57,8 @@ const STAR_VERT = /* glsl */ `
     vec3 sat = clamp(mix(vec3(dot(aColor, vec3(0.333))), aColor, 1.7), 0.0, 1.0);
     vCore = mix(vec3(1.0), sat, 0.32) * trans * flick;   // cores keep a hint of the star's colour
     vHalo = sat * trans * flick;
+    float vis = smoothstep(uMagLimit + 0.35, uMagLimit - 0.35, aMag);
+    tw *= vis;
     vAmpC = clamp(0.75 + 0.9 * (lum - 0.12), 0.0, 1.6) * tw;
     float brightOnly = smoothstep(2.8, 0.5, aMag);                   // only stars brighter than ~mag 2.5 glow
     vAmpH = 0.32 * pow(min(lum / 1.22, 1.4), 1.3) * tw * brightOnly;
@@ -138,7 +141,8 @@ export class StarField {
         uDayFade: { value: 1 },
         uHorizonClip: { value: 1 },
         uTime: { value: 0 },
-        uPixelScale: { value: 1 }
+        uPixelScale: { value: 1 },
+        uMagLimit: { value: 6.5 }
       },
       vertexShader: STAR_VERT,
       fragmentShader: STAR_FRAG,
@@ -176,6 +180,7 @@ export class StarField {
   }
 
   setDayFade(f) { this.material.uniforms.uDayFade.value = f; }
+  setMagLimit(m) { this.material.uniforms.uMagLimit.value = m; }
   setHorizonClip(on) { this.material.uniforms.uHorizonClip.value = on ? 1 : 0; }
   setNightMode(on) { this.material.uniforms.uNightMode.value = on ? 1 : 0; }
 
