@@ -63,10 +63,10 @@ export function bvToRgb(bvRaw) {
 
 export async function loadSkyCatalog() {
   const [starsRes, linesRes, constRes, namesRes] = await Promise.all([
-    fetch('/data/stars.6.json').then((r) => r.json()),
-    fetch('/data/constellations.lines.json').then((r) => r.json()),
-    fetch('/data/constellations.json').then((r) => r.json()),
-    fetch('/data/starnames.json').then((r) => r.json())
+    fetch(import.meta.env.BASE_URL + 'data/stars.6.json').then((r) => r.json()),
+    fetch(import.meta.env.BASE_URL + 'data/constellations.lines.json').then((r) => r.json()),
+    fetch(import.meta.env.BASE_URL + 'data/constellations.json').then((r) => r.json()),
+    fetch(import.meta.env.BASE_URL + 'data/starnames.json').then((r) => r.json())
   ]);
 
   const refDate = new Date('2000-01-01T12:00:00Z');

@@ -3,6 +3,8 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
 import { fileURLToPath } from 'node:url';
 
 export default defineConfig({
+  // GitHub Pages serves the project under /<repo>/; the deploy workflow sets BASE_PATH
+  base: process.env.BASE_PATH || '/',
   resolve: {
     // satellite.js's root entry re-exports its WASM/worker build, which breaks the bundle;
     // the pure-JS SGP4 modules are all we need (see src/sat/satellites.js).
