@@ -10,9 +10,12 @@
     "preview": "vite preview --host"
   },
   "dependencies": {
+    "@iwer/devui": "^2.8.0",
+    "@iwer/sem": "^2.8.0",
     "@takram/three-atmosphere": "^0.19.1",
     "@takram/three-geospatial": "^0.9.1",
     "astronomy-engine": "^2.1.19",
+    "iwer": "^2.8.0",
     "satellite.js": "^7.2.0",
     "three": "^0.184.0"
   },

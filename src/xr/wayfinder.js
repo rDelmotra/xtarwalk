@@ -178,6 +178,7 @@ export class Wayfinder {
       if (this.foundTimer >= FOUND_HOLD_S && !this.foundFired) {
         this.foundFired = true;
         if (this.onFound) this.onFound(this.targetName);
+        if (!this.target) return;
       }
     } else {
       this.foundTimer = 0;

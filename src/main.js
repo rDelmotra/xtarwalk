@@ -15,6 +15,7 @@ import { AgamottoRing } from './xr/agamottoRing.js';
 import { Satellites } from './sat/satellites.js';
 import { RefineSession, yawOf } from './calibration/skyFit.js';
 import { PushAlign } from './xr/pushAlign.js'; // [Engineer D] push-gesture auto-align
+import { initSimulatorIfRequested, runAutomatedVrDemo } from './xr/simulator.js';
 
 const state = {
   lat: 28.6139,
@@ -758,15 +759,17 @@ async function startXR(mode) {
   await renderer.xr.setSession(session);
 }
 
-if ('xr' in navigator) {
-  navigator.xr.isSessionSupported('immersive-ar').then((ok) => {
-    btnAr.disabled = !ok;
-    if (ok) btnAr.onclick = () => startXR('immersive-ar');
-  });
-  navigator.xr.isSessionSupported('immersive-vr').then((ok) => {
-    btnVr.disabled = !ok;
-    if (ok) btnVr.onclick = () => startXR('immersive-vr');
-  });
+function checkXRSupport() {
+  if ('xr' in navigator) {
+    navigator.xr.isSessionSupported('immersive-ar').then((ok) => {
+      btnAr.disabled = !ok;
+      if (ok) btnAr.onclick = () => startXR('immersive-ar');
+    });
+    navigator.xr.isSessionSupported('immersive-vr').then((ok) => {
+      btnVr.disabled = !ok;
+      if (ok) btnVr.onclick = () => startXR('immersive-vr');
+    });
+  }
 }
 
 window.addEventListener('resize', () => {
@@ -777,12 +780,19 @@ window.addEventListener('resize', () => {
 
 // Boot
 async function boot() {
+  const sim = await initSimulatorIfRequested();
+  checkXRSupport();
+
   catalog = await loadSkyCatalog();
   skyScene = new SkyScene(scene, catalog);
   skyScene.enableAtmosphere(renderer); // physical sky; async, falls back to the gradient
   hudPanel.setButtonActive('constellations', true);
   refreshSky();
   bootSatellites();
+
+  if (sim?.isDemo) {
+    runAutomatedVrDemo({ renderer, scene, skyScene, hudPanel, findTargetByName, startXR, state });
+  }
 
   if (navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(
