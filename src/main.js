@@ -13,6 +13,7 @@ import { MagControl, autoLimit } from './sky/magLimit.js';
 import { DesktopDial } from './ui/desktopDial.js';
 import { AgamottoRing } from './xr/agamottoRing.js';
 import { Satellites } from './sat/satellites.js';
+import { RefineSession, yawOf } from './calibration/skyFit.js';
 import { PushAlign } from './xr/pushAlign.js'; // [Engineer D] push-gesture auto-align
 
 const state = {
@@ -22,6 +23,7 @@ const state = {
   timeOffsetHours: 0,
   showConstellations: true,
   showSatellites: true,
+  realSky: false,
   nightMode: false,
   selectedTarget: null,
   calibrating: false,
@@ -58,7 +60,21 @@ const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerH
 camera.position.set(0, 0, 0);
 
 const calibrator = new SkyCalibrator();
-calibrator.loadSaved(); // desktop starts with the saved yaw; XR sessions reset it (see startXR)
+calibrator.loadSaved();
+// Real-sky taps refine the alignment beyond yaw: each tap on a real object is an observation (where we computed
+// it vs where the hand pointed); 2+ of them fit a full 3-axis rotation (skyFit.js). trim = that fit minus yaw.
+const refine = new RefineSession({ maxPairs: 8, outlierDeg: 4, maxTiltDeg: 3 });
+const trimQ = new THREE.Quaternion();
+const trimTarget = new THREE.Quaternion();
+const _yawQ = new THREE.Quaternion();
+const _Y = new THREE.Vector3(0, 1, 0);
+function resetRefine() { refine.reset(); trimTarget.identity(); }
+{ // any other calibration (choose-and-point, two-palm push, reset) starts the refinement over
+  const snap = calibrator.snapToTarget.bind(calibrator);
+  calibrator.snapToTarget = (...a) => { resetRefine(); return snap(...a); };
+  const reset = calibrator.reset.bind(calibrator);
+  calibrator.reset = (...a) => { resetRefine(); if (a[0]) trimQ.identity(); return reset(...a); };
+} // desktop starts with the saved yaw; XR sessions reset it (see startXR)
 calHintEl.textContent = `Calibration: ${calibrator.getOffsetDegrees().toFixed(1)}° offset`;
 const spatialCard = new SpatialInfoCard();
 scene.add(spatialCard.mesh);
@@ -91,7 +107,7 @@ function updateSatellites(force = false) {
   if (!force && now - lastSatMs < 250) return; // ~4 Hz
   lastSatMs = now;
   satellites.setObserver(state.lat, state.lon, 0);
-  satellites.setDayVisibility(skyScene?.dayVisibility ?? 1);
+  satellites.setDayVisibility((skyScene?.dayVisibility ?? 1) * (skyScene?.overlayFactor ?? 1));
   satellites.update(displayDate());
   const sel = state.selectedTarget;
   if (sel && sel.kind === 'satellite' && !state.inXR && state.calStep === 'idle' && state.finding === 'idle') showSatInfo(sel);
@@ -148,7 +164,8 @@ let magTwisting = false;
 let magLastAuto = 0;
 const magDial = new MagDial(document.getElementById('mag-dial'), {
   onTurn: (d) => { magCtl.turn(d); applyMag(); },
-  onAuto: () => { magCtl.resetToAuto(); applyMag(); }
+  onAuto: () => { magCtl.resetToAuto(); applyMag(); },
+  onTap: () => toggleRealSky()
 });
 function applyMag(external = false) {
   skyScene?.setMagLimit(magCtl.limit);
@@ -503,6 +520,8 @@ function handleRaySelect(raycaster) {
     return;
   }
 
+  if (state.realSky) { realSkyTap(raycaster.ray); return; }
+
   // Planets/Moon/Sun first (real meshes); otherwise the nearest of ALL catalogue stars by angle.
   const hits = raycaster.intersectObjects(skyScene.planetGroup.children, false);
   let target = hits.length > 0 ? hits[0].object.userData.target : null;
@@ -512,6 +531,53 @@ function handleRaySelect(raycaster) {
     target = skyScene.pickStar(raycaster.ray.direction, cam.fov || 65);
   }
   if (target) selectTarget(target);
+}
+
+// ---- Real-sky mode: only the real sky is drawn; taps are forgiving and teach the alignment ----
+const REAL_TAP_DEG = 3.5;      // the real object can be ~1 deg off ours, plus an unsteady hand
+const REAL_STAR_MAG_CAP = 2.5; // only stars bright enough to actually be seen through passthrough
+
+function toggleRealSky(on = !state.realSky) {
+  state.realSky = on;
+  skyScene?.setRealSky(on);
+  magDial.setRealSky(on);
+  document.body.classList.toggle('real-sky', on);
+  updateHtmlInfo(on ? 'Real sky' : 'Sky overlay',
+    on ? 'Drawings hidden. Point at the real Moon, a planet or a bright star and tap it: it is named, and each tap fine-tunes the alignment.'
+       : 'Stars, lines and labels are back.');
+}
+
+function realSkyTap(ray) {
+  const dir = ray.direction;
+  // brightest-first: the Moon/planets, then sunlit satellites, then the bright stars; each in a wide cone
+  let target = skyScene.pickBody(dir, REAL_TAP_DEG);
+  if (!target && state.showSatellites && satellites) target = satellites.pick(dir, 65, { maxDeg: 2.5, sunlitOnly: true });
+  if (!target) target = skyScene.pickStar(dir, 65, { maxDeg: REAL_TAP_DEG, magCap: REAL_STAR_MAG_CAP, magWeight: 0.35 });
+  if (!target) return;
+  selectTarget(target);
+  learnFromTap(target, dir);
+}
+
+/** One observation: our direction of `target` (skyRoot-local) vs where the hand pointed (world). */
+function learnFromTap(target, dirWorld) {
+  // only for real pointing in the headset, at the live sky (a scrubbed sky is not the real one), never satellites
+  if (!state.inXR || target.kind === 'satellite') return;
+  if (Math.abs(state.timeOffsetHours) > 0.01 || dialState?.scrubbing) return;
+  const s = new THREE.Vector3(target.pos.x, target.pos.y, target.pos.z);
+  if (target.kind === 'star') s.applyQuaternion(skyScene.celestialGroup.quaternion); // celestial -> skyRoot local
+  s.normalize();
+  const w = dirWorld.clone().normalize();
+  const weight = target.kind === 'planet' ? 2 : 1; // Moon/planets are big and unmistakable
+  const r = refine.add(s, w, weight);
+  const q = new THREE.Quaternion(r.q.x, r.q.y, r.q.z, r.q.w);
+  const yaw = yawOf(r.q);
+  calibrator.targetYaw = yaw; // (direct: not snapToTarget, which would reset the refinement)
+  trimTarget.setFromAxisAngle(_Y, -yaw).multiply(q);
+  const msg = r.rejected
+    ? `${target.name}: that tap disagreed with the others, ignored`
+    : `Aligned on ${refine.count} point${refine.count > 1 ? 's' : ''} (±${r.rmsDeg.toFixed(1)}°)`;
+  calHintEl.textContent = msg;
+  statusEl.textContent = msg;
 }
 
 function clearSatSelection() {
@@ -555,7 +621,8 @@ const handInput = new XRInputManager(renderer, scene, handleRaySelect, {
   onScrubEnd: () => dial.end(),
   onMagBegin: () => { magTwisting = true; },
   onMagTurn: (d) => { magCtl.turn(d); applyMag(true); },
-  onMagEnd: () => { magTwisting = false; }
+  onMagEnd: () => { magTwisting = false; },
+  onMagTap: () => toggleRealSky()
 });
 
 // Desktop mouse-look & click selection
@@ -615,6 +682,7 @@ window.addEventListener('keydown', (e) => {
   const tag = (e.target && e.target.tagName) || '';
   if (tag === 'INPUT' || tag === 'TEXTAREA') return;
   if (e.key === '\\') { dialGoLive(); return; }
+  if (e.key === 'r' || e.key === 'R') { toggleRealSky(); return; }
   const dir = e.key === ']' ? 1 : e.key === '[' ? -1 : 0;
   if (!dir) return;
   e.preventDefault();
@@ -723,6 +791,10 @@ async function boot() {
 
 boot();
 if (import.meta.env.DEV) window.__xw = { get skyScene() { return skyScene; }, get satellites() { return satellites; }, camera, dial, calibrator, state, get snapshot() { return lastSnapshot; },
+  /** dev: the alignment the sky is easing toward (yaw x trim) */
+  get alignTarget() { return new THREE.Quaternion().setFromAxisAngle(_Y, calibrator.targetYaw).multiply(trimTarget); },
+  /** dev: a real-sky tap along a world direction (set state.inXR to exercise the alignment learning) */
+  realSkyTap(d) { realSkyTap({ direction: new THREE.Vector3(d.x, d.y, d.z).normalize() }); },
   /** dev: aim the desktop camera at a world direction */
   lookAt(v) { yaw = Math.atan2(-v.x, -v.z); pitch = Math.asin(Math.max(-1, Math.min(1, v.y / Math.hypot(v.x, v.y, v.z)))); applyDesktopCamera(); } };
 if (import.meta.env.DEV) window.__xw.simulatePush = (altDeg, azWorldDeg = 0) => pushAlign.simulatePush(altDeg, azWorldDeg); // [Engineer D]
@@ -737,7 +809,9 @@ renderer.setAnimationLoop((now) => {
   if (state.inXR) pushAlign.update(dt, renderer.xr.getCamera()); // [Engineer D]
 
   if (skyScene) {
-    skyScene.skyRoot.rotation.y = calibrator.update(dt);
+    _yawQ.setFromAxisAngle(_Y, calibrator.update(dt));
+    trimQ.slerp(trimTarget, Math.min(1, dt * 8));
+    skyScene.skyRoot.quaternion.copy(_yawQ).multiply(trimQ);
     skyScene.tick(dt, renderer.xr.isPresenting ? renderer.xr.getCamera() : camera);
     updateSatellites();
     const selSat = state.selectedTarget?.kind === 'satellite' ? state.selectedTarget : null;

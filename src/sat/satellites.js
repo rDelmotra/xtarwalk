@@ -189,15 +189,18 @@ export class Satellites {
   setSelected(t) { this.selected = t && t.kind === 'satellite' ? t : null; }
 
   /** Nearest visible satellite to a world-space direction, or null. */
-  pick(dirWorld, fovDeg = 65) {
+  /** @param {{maxDeg?:number, sunlitOnly?:boolean}} [opts] real-sky taps: wider cone, only sunlit (really visible) ones */
+  pick(dirWorld, fovDeg = 65, opts = {}) {
     if (!this.points || !this.visible) return null;
     this.parent.getWorldQuaternion(this._skyQ).invert();
     const d = this._d.copy(dirWorld).normalize().applyQuaternion(this._skyQ);
-    const maxDeg = Math.max(1.5, fovDeg * 0.04);
+    const maxDeg = opts.maxDeg ?? Math.max(1.5, fovDeg * 0.04);
     const cosMax = Math.cos(maxDeg * DEG);
     let best = -1, bestC = cosMax;
     for (let i = 0; i < this.n; i++) {
-      if (this.bright[i] <= 0.001) continue;
+      const st = this.state[i];
+      if (st.alt <= 0) continue;
+      if (opts.sunlitOnly ? !st.sunlit : this.bright[i] <= 0.001) continue;
       const c = (this.pos[i * 3] * d.x + this.pos[i * 3 + 1] * d.y + this.pos[i * 3 + 2] * d.z) / DRAW_R;
       if (c > bestC) { bestC = c; best = i; }
     }

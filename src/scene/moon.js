@@ -21,6 +21,7 @@ const VERT = /* glsl */ `
 const FRAG = /* glsl */ `
   uniform vec3 uSunWorld;
   uniform float uNight;
+  uniform float uOpacity;
   uniform float uDay;     // 0 night .. 1 daylight (moon washes out a little in daylight)
   uniform sampler2D uMap; // NASA LROC colour map (decoded to linear by the sampler)
   uniform float uHasMap;  // 0 until the texture has loaded (procedural fallback), then 1
@@ -111,17 +112,18 @@ const FRAG = /* glsl */ `
     col = pow(max(col, vec3(0.0)), vec3(1.0 / 2.2));   // back to display values, as the rest of the sky is
     float l = dot(col, vec3(0.3, 0.59, 0.11));
     col = mix(col, vec3(1.0, 0.25, 0.2) * l, uNight);
-    gl_FragColor = vec4(col, 1.0);
+    gl_FragColor = vec4(col, uOpacity);
   }
 `;
 
 const GLOW_FRAG = /* glsl */ `
   uniform float uStrength;
   uniform float uNight;
+  uniform float uOpacity;
   varying vec2 vUv;
   void main() {
     float r = length(vUv - 0.5) * 2.0;
-    float g = uStrength * (0.55 * exp(-r * 5.5) + 0.12 * exp(-r * 2.2)) * smoothstep(1.0, 0.7, r);
+    float g = uOpacity * uStrength * (0.55 * exp(-r * 5.5) + 0.12 * exp(-r * 2.2)) * smoothstep(1.0, 0.7, r);
     vec3 c = mix(vec3(0.85, 0.9, 1.0), vec3(1.0, 0.25, 0.2), uNight);
     gl_FragColor = vec4(c * g, 1.0);
   }
@@ -135,12 +137,13 @@ export class Moon {
   constructor(radius = 1.0) {
     this.radius = radius;
     this.material = new THREE.ShaderMaterial({
-      uniforms: { uSunWorld: { value: new THREE.Vector3(0, 1, 0) }, uNight: { value: 0 }, uDay: { value: 0 }, uMap: { value: null }, uHasMap: { value: 0 } },
+      uniforms: { uSunWorld: { value: new THREE.Vector3(0, 1, 0) }, uNight: { value: 0 }, uDay: { value: 0 }, uMap: { value: null }, uHasMap: { value: 0 }, uOpacity: { value: 1 } },
+      transparent: true,
       vertexShader: VERT,
       fragmentShader: FRAG
     });
     this.glowMaterial = new THREE.ShaderMaterial({
-      uniforms: { uStrength: { value: 0.5 }, uNight: { value: 0 } },
+      uniforms: { uStrength: { value: 0.5 }, uNight: { value: 0 }, uOpacity: { value: 1 } },
       vertexShader: GLOW_VERT,
       fragmentShader: GLOW_FRAG,
       transparent: true,
@@ -195,6 +198,12 @@ export class Moon {
     this.material.uniforms.uDay.value = 1 - dayFade;
     this.glowMaterial.uniforms.uStrength.value = (0.15 + 0.85 * phaseFrac) * (0.35 + 0.65 * dayFade);
     this.glowMaterial.uniforms.uNight.value = night ? 1 : 0;
+  }
+
+  /** 1 = the full virtual Moon; lower in MR so the real one shows through (0 = only the crosshair/label). */
+  setOpacity(a) {
+    this.material.uniforms.uOpacity.value = a;
+    this.glowMaterial.uniforms.uOpacity.value = a;
   }
 
   dispose() {

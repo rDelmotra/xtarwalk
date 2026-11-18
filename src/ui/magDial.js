@@ -29,9 +29,12 @@ const magToAng = (m) => A0 + ((m - MAG_MIN) / (MAG_MAX - MAG_MIN)) * (A1 - A0);
 const wrap180 = (d) => ((((d + 180) % 360) + 360) % 360) - 180;
 
 export class MagDial {
-  constructor(containerEl, { onTurn, onAuto }) {
+  constructor(containerEl, { onTurn, onAuto, onTap }) {
     this.root = containerEl;
-    this.cb = { onTurn, onAuto };
+    this.cb = { onTurn, onAuto, onTap };
+    this.realSky = false;
+    this._downAt = 0;
+    this._turned = 0;
     this.pointerId = null;
     this.lastAngle = 0;
     this.hovering = false;
@@ -40,7 +43,7 @@ export class MagDial {
     this.root.classList.add('dial-root');
 
     const svg = el('svg', { viewBox: '0 0 220 220', class: 'dial-svg', tabindex: '0', role: 'slider',
-      'aria-label': 'Star depth: drag around, scroll, or use arrow keys' });
+      'aria-label': 'Star depth: drag around, scroll, or use arrow keys; tap for real-sky mode' });
     this.svg = svg;
     this.root.appendChild(svg);
     el('path', { class: 'd-ring-thin', d: arcPath(R, A0, A1) }, svg);
@@ -70,6 +73,8 @@ export class MagDial {
       this.pointerId = e.pointerId;
       try { svg.setPointerCapture(e.pointerId); } catch { /* ignore */ }
       this.lastAngle = ang(e).a;
+      this._downAt = performance.now();
+      this._turned = 0;
       this.wake();
       e.preventDefault();
     });
@@ -80,9 +85,18 @@ export class MagDial {
       if (d < 14) return;
       const delta = wrap180(a - this.lastAngle);
       this.lastAngle = a;
+      this._turned += Math.abs(delta);
+      if (this._turned < 3) return; // a tap may wobble a little; turning starts past 3 deg
       if (delta) this.cb.onTurn?.(delta);
     });
-    const up = (e) => { stop(e); if (e.pointerId === this.pointerId) { this.pointerId = null; this.wake(); } };
+    const up = (e) => {
+      stop(e);
+      if (e.pointerId !== this.pointerId) return;
+      this.pointerId = null;
+      // a quick press without turning = tap: toggles real-sky mode
+      if (e.type === 'pointerup' && this._turned < 3 && performance.now() - this._downAt < 450) this.cb.onTap?.();
+      this.wake();
+    };
     svg.addEventListener('pointerup', up);
     svg.addEventListener('pointercancel', up);
     svg.addEventListener('wheel', (e) => {
@@ -103,6 +117,15 @@ export class MagDial {
     this.autoBtn.addEventListener('click', (e) => { stop(e); this.cb.onAuto?.(); });
   }
 
+  /** Real-sky mode indicator: the dial's caption reads REAL SKY while our drawings are hidden. */
+  setRealSky(on) {
+    this.realSky = !!on;
+    this.root.classList.toggle('real-sky', this.realSky);
+    this.lastKey = '';
+    if (this._lastM) this.render(this._lastM);
+    this.wake();
+  }
+
   wake() {
     this.root.classList.add('active');
     clearTimeout(this.idleTimer);
@@ -115,6 +138,7 @@ export class MagDial {
   /** @param {{limit:number, auto:number, isAuto:boolean, labels:{main:string, sub:string}}} m */
   render(m, { externalTurn = false } = {}) {
     if (externalTurn) this.wake(); // XR left-hand twist also lights it up
+    this._lastM = m;
     const key = `${m.limit.toFixed(2)}|${m.auto.toFixed(2)}|${m.isAuto}`;
     if (key === this.lastKey) return;
     this.lastKey = key;
@@ -129,7 +153,7 @@ export class MagDial {
     this.autoTick.setAttribute('x1', x0); this.autoTick.setAttribute('y1', y0);
     this.autoTick.setAttribute('x2', x1); this.autoTick.setAttribute('y2', y1);
     this.t2.textContent = m.limit.toFixed(1);
-    this.t3.textContent = m.isAuto ? 'AUTO' : m.labels.sub.toUpperCase();
+    this.t3.textContent = this.realSky ? 'REAL SKY' : m.isAuto ? 'AUTO' : m.labels.sub.toUpperCase();
     this.autoBtn.classList.toggle('is-live', m.isAuto);
   }
 }

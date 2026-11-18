@@ -74,6 +74,11 @@ export class SkyScene {
     this._buildPlanets();
     this.isAR = false;
     this.nightMode = false;
+    // Real-sky mode: our drawings fade out so only the real sky is seen; hit targets, names and the
+    // selection crosshair keep working. _overlay eases 1 (drawn) <-> 0 (real sky only).
+    this.realSky = false;
+    this._overlay = 1;
+    this.dayVisibility = 1;
     this._hitGeo = new THREE.SphereGeometry(2.6, 12, 12);
     this._hitMat = new THREE.MeshBasicMaterial({ visible: false });
     this.domeSky = new DomeSky(scene);
@@ -222,11 +227,8 @@ export class SkyScene {
     this.sunAlt = alt;
     this.domeSky.setSun(sv);
     const fade = dayFadeForSunAlt(alt);
-    const shown = withDayFloor(fade);
-    this.starField.setDayFade(shown);
-    this.starTrails.setDayFade(shown);
-    this.lineMaterial.uniforms.uDayFade.value = shown;
-    this.dayVisibility = shown; // read by other overlays (satellites)
+    this.dayVisibility = withDayFloor(fade); // read by other overlays (satellites)
+    this._applyOverlay();
     // Labels fade with the stars, so their dark boxes don't sit on a daytime sky.
     if (Math.abs(fade - (this._dayFade ?? 1)) > 0.01) {
       this._dayFade = fade;
@@ -476,6 +478,7 @@ export class SkyScene {
     this.starTrails.setHorizonClip(clip);
     this.lineMaterial.uniforms.uHorizonClip.value = clip ? 1 : 0;
     if (changed) this._applyCelestialVisibility(); // all items always exist; only visibility differs
+    if (this.moon && this.starField) this._applyOverlay(); // ghost Moon in MR
   }
 
   /** Per-frame: dome follows the (XR or desktop) camera; sun glow follows calibration yaw. */
@@ -485,6 +488,12 @@ export class SkyScene {
     this.domeSky.update(dt, this._camPos, this._skyQuat);
     this.starField.update(dt);
     this.starTrails.update(dt);
+    const want = this.realSky ? 0 : 1;
+    if (this._overlay !== want) {
+      const step = dt * 2.5;
+      this._overlay = want > this._overlay ? Math.min(want, this._overlay + step) : Math.max(want, this._overlay - step);
+      this._applyOverlay();
+    }
     this._updateMoon();
     if (this.selectionRing.visible) {
       this.selectionRing.material.uniforms.uAngle.value += dt * 0.14; // slow drift (~8 deg/s)
@@ -495,6 +504,34 @@ export class SkyScene {
       this._ringDirty = false;
       if (this.selectionRing.visible) this.selectionRing.lookAt(this._camPos);
     }
+  }
+
+  /** Show only the real sky (MR): fade out stars, lines, labels, planets, the Moon; selection keeps working. */
+  setRealSky(on) {
+    this.realSky = !!on;
+  }
+
+  /** 0..1 how much of our drawn sky is shown (satellites etc. multiply by it). */
+  get overlayFactor() {
+    return this._overlay;
+  }
+
+  _applyOverlay() {
+    const f = this._overlay;
+    const shown = (this.dayVisibility ?? 1) * f;
+    this.starField.setDayFade(shown);
+    this.starTrails.setDayFade(shown);
+    this.lineMaterial.uniforms.uDayFade.value = shown;
+    const labelsOn = f > 0.02;
+    this.labelGroup.visible = labelsOn;
+    this.celestialLabelGroup.visible = labelsOn;
+    for (const e of this._bodyEntries) {
+      if (e.target.name === 'Moon') continue;
+      const m = e.mesh.material;
+      if (m && 'opacity' in m) { m.transparent = true; m.opacity = f; }
+    }
+    // MR: a faint ghost Moon by default so the real one wins; VR/desktop: the full Moon
+    this.moon.setOpacity((this.isAR ? 0.22 : 1) * f);
   }
 
   _updateMoon() {
@@ -560,7 +597,31 @@ export class SkyScene {
    * Pick ANY catalogue star (all 5,044 naked-eye stars) nearest to a world-space direction, by angle,
    * slightly favouring brighter stars. Returns a selection target (pos in celestialGroup-local space) or null.
    */
-  pickStar(dirWorld, fovDeg = 65) {
+  /**
+   * Nearest Sun/Moon/planet within maxDeg of a world direction (real-sky taps are forgiving: the real object
+   * and our computed one can be ~1 deg apart, and a hand is not perfectly steady).
+   */
+  pickBody(dirWorld, maxDeg = 3.5) {
+    this.skyRoot.getWorldQuaternion(this._pickQ).invert();
+    const d = this._pickV.copy(dirWorld).normalize().applyQuaternion(this._pickQ);
+    let best = null, bestScore = Infinity;
+    for (const e of this._bodyEntries) {
+      const t = e.target;
+      if (this.clipHorizon && t.alt < -1) continue;
+      const p = t.pos, len = Math.hypot(p.x, p.y, p.z) || 1;
+      const ang = Math.acos(Math.min(1, (p.x * d.x + p.y * d.y + p.z * d.z) / len)) * 180 / Math.PI;
+      if (ang > maxDeg) continue;
+      const score = ang / maxDeg + 0.08 * (t.mag ?? 0);
+      if (score < bestScore) { bestScore = score; best = t; }
+    }
+    return best;
+  }
+
+  /**
+   * @param {object} [opts] real-sky taps: { maxDeg, magCap (only stars bright enough to be seen for real),
+   *   magWeight (how strongly brightness beats closeness) }
+   */
+  pickStar(dirWorld, fovDeg = 65, opts = {}) {
     const snap = this._lastSnapshot;
     if (!snap) return null;
     const P = snap.starPositions;
@@ -568,16 +629,18 @@ export class SkyScene {
     // world -> celestialGroup local
     this.celestialGroup.getWorldQuaternion(this._pickQ).invert();
     const d = this._pickV.copy(dirWorld).normalize().applyQuaternion(this._pickQ);
-    const maxDeg = Math.max(0.8, fovDeg * 0.022);
+    const maxDeg = opts.maxDeg ?? Math.max(0.8, fovDeg * 0.022);
+    const magCap = Math.min(opts.magCap ?? 99, (this.magLimit ?? 9) + 0.2);
+    const magWeight = opts.magWeight ?? 0.06;
     const cosMax = Math.cos(maxDeg * Math.PI / 180);
     let best = -1, bestScore = Infinity;
     const R = SKY_RADIUS;
     for (let i = 0; i < stars.length; i++) {
       const c = (P[i * 3] * d.x + P[i * 3 + 1] * d.y + P[i * 3 + 2] * d.z) / R;
       if (c < cosMax) continue;
-      if (stars[i].mag > (this.magLimit ?? 9) + 0.2) continue; // not drawn -> not pickable
+      if (stars[i].mag > magCap) continue; // not drawn (or not visible for real) -> not pickable
       const ang = Math.acos(Math.min(1, c)) * 180 / Math.PI;
-      const score = ang / maxDeg + 0.06 * stars[i].mag; // a bright star wins over a slightly closer faint one
+      const score = ang / maxDeg + magWeight * stars[i].mag; // a bright star wins over a slightly closer faint one
       if (score < bestScore) { bestScore = score; best = i; }
     }
     if (best < 0) return null;

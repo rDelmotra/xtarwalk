@@ -28,6 +28,8 @@ export class XRInputManager {
     this.onMagBegin = opts.onMagBegin || (() => {});
     this.onMagTurn = opts.onMagTurn || (() => {});
     this.onMagEnd = opts.onMagEnd || (() => {});
+    // LEFT-hand quick pinch on open sky (released before the twist engages) = a "tap" on the left dial
+    this.onMagTap = opts.onMagTap || null;
     /** controller currently twisting the magnitude dial, or null */
     this.magController = null;
     this.raycaster = new THREE.Raycaster();
@@ -134,7 +136,10 @@ export class XRInputManager {
   _onSelectEnd(slot) {
     const { armed, engaged } = slot;
     this._cancel(slot);
-    if (armed && !engaged) this.onSelectRay(slot.startRay);
+    if (armed && !engaged) {
+      if (this.onMagTap && this._channel(slot) === 'mag') this.onMagTap(slot.startRay);
+      else this.onSelectRay(slot.startRay);
+    }
   }
 
   /** Stop tracking a press; ends the scrub if this slot owned it. */
