@@ -54,6 +54,8 @@ export class XRInputManager {
       opacity: 0.65
     });
 
+    this.rayMat = rayMat;
+
     for (let i = 0; i < 2; i++) {
       const controller = renderer.xr.getController(i);
       const line = new THREE.Line(rayGeo, rayMat);
@@ -184,6 +186,12 @@ export class XRInputManager {
   }
 
   /** Haptic pulse on the scrubbing controller (or any given one). intensity 0..1, ms duration. */
+  /** Calibration "laser": a bright, solid pointing line from the hand, so you can lay it on a real star. */
+  setLaser(on) {
+    this.rayMat.color.setHex(on ? 0xfff1b8 : 0x60a5fa);
+    this.rayMat.opacity = on ? 0.95 : 0.65;
+  }
+
   pulse(intensity, ms, controller = this.scrubController) {
     if (!controller) return;
     const slot = this.slots.find((s) => s.controller === controller);

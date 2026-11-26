@@ -14,6 +14,7 @@ import { DesktopDial } from './ui/desktopDial.js';
 import { AgamottoRing } from './xr/agamottoRing.js';
 import { Satellites } from './sat/satellites.js';
 import { RefineSession, yawOf } from './calibration/skyFit.js';
+import { identifyTaps } from './calibration/twoPoint.js';
 import { SkyPhoto } from './scene/skyPhoto.js';
 import { PushAlign } from './xr/pushAlign.js'; // [Engineer D] push-gesture auto-align
 import { initSimulatorIfRequested, runAutomatedVrDemo } from './xr/simulator.js';
@@ -29,7 +30,9 @@ const state = {
   nightMode: false,
   selectedTarget: null,
   calibrating: false,
-  calStep: 'idle', // 'idle' | 'choose' | 'point'
+  calStep: 'idle', // 'idle' | 'choose' | 'point' | 'tap' (guided point-at-two-objects)
+  calTaps: [],
+  calRealSkyWas: false,
   calTargetName: null,
   finding: 'idle', // 'idle' | 'choose' | 'tracking'
   findName: null,
@@ -262,7 +265,7 @@ function handleAction(action) {
     if (state.finding === 'choose') startFinding(action.slice(9));
   } else if (action === 'calibrate') {
     if (state.finding !== 'idle') exitFind(false);
-    if (state.calStep === 'idle') enterChooseStep();
+    if (state.calStep === 'idle') enterTapCalibration();
     else exitCalibration();
   } else if (action === 'resetAlign') {
     calibrator.reset();
@@ -461,7 +464,11 @@ function enterPointStep(name) {
 }
 
 function exitCalibration() {
+  const wasTap = state.calStep === 'tap';
   setCalUi('idle');
+  state.calTaps = [];
+  handInput.setLaser(false);
+  if (wasTap && state.realSky !== state.calRealSkyWas) toggleRealSky(state.calRealSkyWas);
   calibrator.cancelCalibration();
   state.calTargetName = null;
   hudPanel.setRow([{ id: 'resetAlign', label: 'Reset alignment' }]);
@@ -528,6 +535,7 @@ function handleRaySelect(raycaster) {
     finishSnap(raycaster.ray);
     return;
   }
+  if (state.calStep === 'tap') { calTap(raycaster.ray.direction); return; }
 
   if (state.realSky) { realSkyTap(raycaster.ray); return; }
 
@@ -576,6 +584,100 @@ function realSkyTap(ray) {
   learnFromTap(target, dir);
 }
 
+/** Our computed direction of a target, in skyRoot-local space (stars live in the celestial group). */
+function skyLocalDir(target) {
+  const s = new THREE.Vector3(target.pos.x, target.pos.y, target.pos.z);
+  if (target.kind === 'star') s.applyQuaternion(skyScene.celestialGroup.quaternion);
+  return s.normalize();
+}
+
+/** Point the sky along a fitted rotation (yaw goes to the calibrator, the small rest to the trim). */
+function applyFit(qFit) {
+  const q = new THREE.Quaternion(qFit.x, qFit.y, qFit.z, qFit.w);
+  const yaw = yawOf(qFit);
+  calibrator.targetYaw = yaw; // (direct: not snapToTarget, which would reset the refinement)
+  trimTarget.setFromAxisAngle(_Y, -yaw).multiply(q);
+}
+
+// ---- Guided calibration: point your finger at two real objects (the Moon + a bright star, or two bright stars).
+// Gravity gives each pointing direction's height; the angle between the two taps ignores the compass; together they
+// say WHICH objects you pointed at (twoPoint.js), and the pair pins the whole sky. A doubtful pair asks for a third.
+let morphUntil = 0;       // after a lock, the drawings glide slowly onto the real sky so you see them land
+const MORPH_MS = 1800;
+
+function calCandidates() {
+  if (!lastSnapshot) return [];
+  const out = [];
+  for (const b of lastSnapshot.solarSystem) {
+    if (b.name === 'Sun' || b.alt <= 3) continue;
+    if (b.name === 'Moon' || b.mag < 2) out.push({ name: b.name, s: skyLocalDir(b), mag: b.mag, weight: 2, target: b });
+  }
+  for (const st of lastSnapshot.visibleNamedStars) {
+    if (st.alt > 3 && st.mag <= 2.2) out.push({ name: st.name, s: skyLocalDir(st), mag: st.mag, weight: 1, target: st });
+  }
+  return out;
+}
+
+function calPrompt(title, body) {
+  updateHtmlInfo(title, body);
+  statusEl.textContent = title;
+  calHintEl.textContent = title;
+}
+
+function enterTapCalibration() {
+  if (state.finding !== 'idle') exitFind(false);
+  setCalUi('tap');
+  state.calTaps = [];
+  calibrator.startCalibration();
+  hudPanel.setRow([{ id: 'calibrate', label: 'Cancel', active: true }]);
+  handInput.setLaser(true);
+  // only the real sky while you point: our (still misaligned) drawings would just confuse the eye
+  state.calRealSkyWas = state.realSky;
+  if (state.isAR && !state.realSky) toggleRealSky(true);
+  const moonUp = calCandidates().some((c) => c.name === 'Moon');
+  calPrompt(moonUp ? 'Point at the Moon and pinch' : 'Point at the brightest star you can see and pinch',
+    'Aim your finger at the real object in the sky (the line from your hand shows where). Desktop: click where it is.');
+}
+
+function calTap(dirWorld) {
+  state.calTaps.push(dirWorld.clone().normalize());
+  handInput.pulse(0.6, 40, handInput.controllers[0]); handInput.pulse(0.6, 40, handInput.controllers[1]);
+  if (state.calTaps.length === 1) {
+    calPrompt('Now another bright star, and pinch', 'Pick one a few hand-widths away from the first. The brighter, the better.');
+    return;
+  }
+  const res = identifyTaps(state.calTaps, calCandidates());
+  if (!res.ok) {
+    if (res.reason === 'too-close') {
+      state.calTaps.pop();
+      calPrompt('Pick one further away, and pinch', 'Those two are too close together to line the sky up. Choose a star a few hand-widths away.');
+    } else {
+      state.calTaps = [];
+      calPrompt('Couldn\'t match those, try again', 'Point at the Moon or the brightest star first, then a second bright star. Hold your hand steady as you pinch.');
+    }
+    return;
+  }
+  if (res.ambiguous && state.calTaps.length < 3) {
+    calPrompt('One more bright star, and pinch', 'Those two could be more than one pair of stars. A third settles it.');
+    return;
+  }
+  // lock: the matched pairs become the start of the real-sky refinement, so later taps keep improving it
+  refine.reset();
+  let r = null;
+  for (const m of res.matches) r = refine.add(m.cand.s, state.calTaps[m.tap], m.cand.weight ?? 1);
+  applyFit(r ? r.q : res.q);
+  morphUntil = performance.now() + MORPH_MS;
+  const names = res.matches.map((m) => m.cand.name);
+  const last = res.matches[res.matches.length - 1].cand.target;
+  exitCalibration();
+  const msg = `Locked on ${names.join(' + ')} (±${(r ? r.rmsDeg : res.rmsDeg).toFixed(1)}°)`;
+  calHintEl.textContent = msg;
+  statusEl.textContent = msg;
+  updateHtmlInfo(msg, 'The sky is lined up. In real-sky mode every object you tap keeps fine-tuning it.');
+  if (last) { state.selectedTarget = last; skyScene.highlightTarget(last, camera.position); pulseStart = performance.now(); }
+  if (state.inXR && last) spatialCard.show(last, state.nightMode);
+}
+
 /** One observation: our direction of `target` (skyRoot-local) vs where the hand pointed (world). */
 function learnFromTap(target, dirWorld) {
   // only for real pointing in the headset, at the live sky (a scrubbed sky is not the real one), never satellites
@@ -587,10 +689,7 @@ function learnFromTap(target, dirWorld) {
   const w = dirWorld.clone().normalize();
   const weight = target.kind === 'planet' ? 2 : 1; // Moon/planets are big and unmistakable
   const r = refine.add(s, w, weight);
-  const q = new THREE.Quaternion(r.q.x, r.q.y, r.q.z, r.q.w);
-  const yaw = yawOf(r.q);
-  calibrator.targetYaw = yaw; // (direct: not snapToTarget, which would reset the refinement)
-  trimTarget.setFromAxisAngle(_Y, -yaw).multiply(q);
+  applyFit(r.q);
   const msg = r.rejected
     ? `${target.name}: that tap disagreed with the others, ignored`
     : `Aligned on ${refine.count} point${refine.count > 1 ? 's' : ''} (±${r.rmsDeg.toFixed(1)}°)`;
@@ -749,6 +848,8 @@ async function startXR(mode) {
   state.isAR = mode === 'immersive-ar';
   skyScene?.setARMode(state.isAR);
   hudPanel.group.visible = true;
+  // in mixed reality the real sky is right there: start by lining ours up with it (two pinches; Cancel skips)
+  if (state.isAR) enterTapCalibration();
 
   session.addEventListener('select', (e) => {
     if (!e.inputSource || e.inputSource.targetRayMode !== 'screen') return;
@@ -840,6 +941,10 @@ if (import.meta.env.DEV) window.__xw = { get skyScene() { return skyScene; }, ge
   get alignTarget() { return new THREE.Quaternion().setFromAxisAngle(_Y, calibrator.targetYaw).multiply(trimTarget); },
   /** dev: a real-sky tap along a world direction (set state.inXR to exercise the alignment learning) */
   realSkyTap(d) { realSkyTap({ direction: new THREE.Vector3(d.x, d.y, d.z).normalize() }); },
+  startTapCalibration() { enterTapCalibration(); },
+  calTap(d) { calTap(new THREE.Vector3(d.x, d.y, d.z)); },
+  get calStep() { return state.calStep; },
+  calCandidates() { return calCandidates().map((c) => ({ name: c.name, mag: c.mag, s: { x: c.s.x, y: c.s.y, z: c.s.z } })); },
   /** dev: aim the desktop camera at a world direction */
   lookAt(v) { yaw = Math.atan2(-v.x, -v.z); pitch = Math.asin(Math.max(-1, Math.min(1, v.y / Math.hypot(v.x, v.y, v.z)))); applyDesktopCamera(); } };
 if (import.meta.env.DEV) window.__xw.simulatePush = (altDeg, azWorldDeg = 0) => pushAlign.simulatePush(altDeg, azWorldDeg); // [Engineer D]
@@ -854,8 +959,9 @@ renderer.setAnimationLoop((now) => {
   if (state.inXR) pushAlign.update(dt, renderer.xr.getCamera()); // [Engineer D]
 
   if (skyScene) {
-    _yawQ.setFromAxisAngle(_Y, calibrator.update(dt));
-    trimQ.slerp(trimTarget, Math.min(1, dt * 8));
+    const morphRate = now < morphUntil ? 2.2 : 8; // slow glide right after a lock, so you see the sky land
+    _yawQ.setFromAxisAngle(_Y, calibrator.update(dt * morphRate / 8));
+    trimQ.slerp(trimTarget, Math.min(1, dt * morphRate));
     skyScene.skyRoot.quaternion.copy(_yawQ).multiply(trimQ);
     skyScene.tick(dt, renderer.xr.isPresenting ? renderer.xr.getCamera() : camera);
     if (skyPhoto?.mesh.visible) skyPhoto.update(displayDate(), skyScene.lat, skyScene.lon, dt);
